@@ -1,5 +1,12 @@
 import numpy as np
+import pytest
 from expression_recognizer import ExpressionRecognizer, EMOTIONS
+
+
+@pytest.fixture(scope="session")
+def recognizer():
+    """Session-scoped fixture: load model once for all tests."""
+    return ExpressionRecognizer()
 
 
 def test_emotions_list():
@@ -9,14 +16,14 @@ def test_emotions_list():
     assert "Sad" in EMOTIONS
 
 
-def test_recognizer_init():
-    rec = ExpressionRecognizer()
+def test_recognizer_init(recognizer):
+    rec = recognizer
     assert rec is not None
     assert hasattr(rec, "recognize")
 
 
-def test_recognize_format():
-    rec = ExpressionRecognizer()
+def test_recognize_format(recognizer):
+    rec = recognizer
     # 随机输入图像 (224x224)
     face_img = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
     result = rec.recognize(face_img)
