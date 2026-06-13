@@ -99,8 +99,8 @@ def estimate_head_pose(face: Face, image_shape: tuple) -> tuple:
 
     h, w = image_shape[:2]
 
-    # 相机内参矩阵 (近似，实际焦距约为图像宽度)
-    focal = w
+    # 相机内参：典型 webcam 焦距约 1.2× 图像宽度
+    focal = w * 1.2
     center = (w / 2.0, h / 2.0)
     camera_matrix = np.array([
         [focal, 0, center[0]],
@@ -119,10 +119,9 @@ def estimate_head_pose(face: Face, image_shape: tuple) -> tuple:
     if not success:
         return (0.0, 0.0, 0.0)
 
-    # 旋转向量 → 旋转矩阵 → 欧拉角
     rmat, _ = cv2.Rodrigues(rvec)
 
-    # 提取俯仰角 (pitch)
+    # 提取欧拉角
     sy = np.sqrt(rmat[0, 0] ** 2 + rmat[1, 0] ** 2)
     singular = sy < 1e-6
     if not singular:
@@ -137,13 +136,28 @@ def estimate_head_pose(face: Face, image_shape: tuple) -> tuple:
     return (np.degrees(pitch), np.degrees(yaw), np.degrees(roll))
 
 
-def classify_head_pose(pitch: float, threshold: float = 25.0) -> str:
+def face_aspect_ratio(face: Face) -> float:
+    """脸部宽高比 (height/width)，低头时比值变小"""
+    x1, y1, x2, y2 = face.bbox
+    w_box = x2 - x1
+    h_box = y2 - y1
+    if w_box <= 0:
+        return 1.0
+    return h_box / w_box
+
+
+def classify_head_pose(pitch: float, threshold: float = 20.0,
+                       face_ar: float = None) -> str:
     """
-    根据俯仰角判断头部状态
+    综合俯仰角 + 脸部宽高比判断头部状态
     pitch > threshold  → "低头"
     pitch < -threshold → "抬头"
-    否则              → "正常"
+    如果 face_ar 明显偏小 (< 1.1)，降低低头判定阈值
     """
+    # 脸部宽高比辅助：正常脸约 1.2~1.4，低头时 < 1.1
+    if face_ar is not None and face_ar < 1.05:
+        threshold = threshold * 0.7  # 更容易判低头
+
     if pitch > threshold:
         return "低头"
     elif pitch < -threshold:

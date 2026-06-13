@@ -124,7 +124,8 @@ def process_frame(image):
             valid_faces.append(face)
             # 头部姿态估计
             pitch, yaw, roll = face_detector.estimate_head_pose(face, image.shape)
-            status = face_detector.classify_head_pose(pitch)
+            far = face_detector.face_aspect_ratio(face)
+            status = face_detector.classify_head_pose(pitch, face_ar=far)
             if status == "低头":
                 head_down += 1
             elif status == "抬头":
