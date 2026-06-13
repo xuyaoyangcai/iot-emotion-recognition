@@ -7,8 +7,9 @@ import plotly.graph_objects as go
 from datetime import datetime
 from io import StringIO
 from PIL import Image
+import time
 
-from face_detector import detect_faces, extract_face_roi
+from face_detector import detect_faces, extract_face_roi, Face
 from expression_recognizer import ExpressionRecognizer, EMOTIONS
 from analyzer import ResultAnalyzer
 from utils import (
@@ -16,18 +17,16 @@ from utils import (
     make_emoji_overlay, EMOTION_COLORS
 )
 
-st.set_page_config(
-    page_title="表情识别系统",
-    page_icon="🎭",
-    layout="wide",
-)
+st.set_page_config(page_title="表情识别系统", page_icon="🎭", layout="wide")
 
-# 初始化
+# ── 初始化 ──
 if "analyzer" not in st.session_state:
     st.session_state.analyzer = ResultAnalyzer()
 if "recognizer" not in st.session_state:
-    with st.spinner("正在加载模型..."):
+    with st.spinner("加载模型中..."):
         st.session_state.recognizer = ExpressionRecognizer()
+if "cam" not in st.session_state:
+    st.session_state.cam = None
 
 analyzer = st.session_state.analyzer
 
@@ -36,8 +35,8 @@ with st.sidebar:
     st.title("🎭 表情识别系统")
     mode = st.radio("选择模式", ["🪞 魔镜模式", "📊 仪表盘模式"])
     st.markdown("---")
-    input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 摄像头"])
-    threshold = st.slider("检测阈值", 0.3, 0.9, 0.5, 0.05)
+    input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 实时摄像头"])
+    threshold = st.slider("检测阈值", 0.3, 0.9, 0.4, 0.05)
     st.markdown("---")
     if st.button("🔄 重置统计"):
         analyzer.clear()
@@ -46,26 +45,44 @@ with st.sidebar:
         buf = StringIO()
         analyzer.export_csv(buf)
         st.download_button("📥 导出CSV", buf.getvalue(),
-                           f"records_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                           mime="text/csv")
+                           f"records_{datetime.now():%Y%m%d_%H%M%S}.csv", mime="text/csv")
 
-# ── 核心函数 ──
+# ── 处理函数 ──
 def process_frame(image):
     faces = detect_faces(image)
     emotions = []
+    valid_faces = []
     for face in faces:
         if face.confidence < threshold:
             continue
         roi = extract_face_roi(image, face)
-        probs = st.session_state.recognizer.recognize(roi)
-        emotions.append(probs)
-    return faces, emotions
+        if roi.size == 0:
+            continue
+        try:
+            probs = st.session_state.recognizer.recognize(roi)
+            emotions.append(probs)
+            valid_faces.append(face)
+        except Exception:
+            continue
+    return valid_faces, emotions
 
 def save_records(faces, emotions, source):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for i, (face, probs) in enumerate(zip(faces, emotions)):
         top = max(probs, key=probs.get)
         analyzer.add_record(ts, source, i + 1, top, probs[top])
+
+def render_result(image, faces, emotions):
+    """根据模式渲染画面"""
+    if mode == "🪞 魔镜模式":
+        result = image.copy()
+        for face, probs in zip(faces, emotions):
+            top = max(probs, key=probs.get)
+            result = apply_mood_filter(result, top)
+            result = make_emoji_overlay(result, face, top)
+        return result
+    else:
+        return draw_face_boxes(image, faces, emotions)
 
 def show_stats():
     s = analyzer.get_summary()
@@ -79,12 +96,12 @@ def show_stats():
         left, right = st.columns(2)
         with left:
             fig = go.Figure(data=[go.Pie(labels=list(data.keys()), values=list(data.values()), hole=0.5)])
-            fig.update_layout(title="情绪占比", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            fig.update_layout(title="情绪占比", height=300, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig, use_container_width=True)
         with right:
             fig = px.bar(x=list(data.keys()), y=list(data.values()), title="各表情计数",
                          labels={"x": "表情", "y": "次数"})
-            fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
+            fig.update_layout(height=300, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig, use_container_width=True)
     if analyzer.records:
         st.markdown("---")
@@ -102,21 +119,14 @@ if input_type == "📷 上传图片":
         faces, emotions = process_frame(image)
         col_a, col_b = st.columns([2, 1])
         with col_a:
-            if mode == "🪞 魔镜模式":
-                result = image.copy()
-                for face, probs in zip(faces, emotions):
-                    top = max(probs, key=probs.get)
-                    result = apply_mood_filter(result, top)
-                    result = make_emoji_overlay(result, face, top)
-            else:
-                result = draw_face_boxes(image, faces, emotions)
+            result = render_result(image, faces, emotions)
             st.image(cv2.cvtColor(result, cv2.COLOR_BGR2RGB),
                      caption=f"检测到 {len(faces)} 张人脸", use_container_width=True)
         with col_b:
             save_records(faces, emotions, file.name)
             show_stats()
     else:
-        st.info("👆 请上传一张图片开始识别")
+        st.info("👆 请上传一张图片")
 
 elif input_type == "🎬 上传视频":
     file = st.file_uploader("上传视频", type=["mp4", "avi", "mov"])
@@ -126,7 +136,7 @@ elif input_type == "🎬 上传视频":
             f.write(file.read())
         cap = cv2.VideoCapture(tmp)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        st.info(f"共 {total} 帧，正在处理...")
+        st.info(f"共 {total} 帧，每5帧处理一次...")
         bar = st.progress(0)
         slot = st.empty()
         n = 0
@@ -139,14 +149,8 @@ elif input_type == "🎬 上传视频":
                 continue
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             faces, emotions = process_frame(rgb)
-            if mode == "🪞 魔镜模式":
-                res = rgb.copy()
-                for face, probs in zip(faces, emotions):
-                    res = apply_mood_filter(res, max(probs, key=probs.get))
-                    res = make_emoji_overlay(res, face, max(probs, key=probs.get))
-            else:
-                res = draw_face_boxes(rgb, faces, emotions)
-            slot.image(res, use_container_width=True)
+            result = render_result(rgb, faces, emotions)
+            slot.image(result, use_container_width=True)
             save_records(faces, emotions, file.name)
             bar.progress(min(n / total, 1.0))
         cap.release()
@@ -155,25 +159,40 @@ elif input_type == "🎬 上传视频":
     else:
         st.info("👆 请上传一个视频文件")
 
-elif input_type == "🎥 摄像头":
-    photo = st.camera_input("拍照")
-    if photo:
-        image = cv2.cvtColor(np.array(Image.open(photo).convert("RGB")), cv2.COLOR_RGB2BGR)
-        faces, emotions = process_frame(image)
-        col_a, col_b = st.columns([2, 1])
-        with col_a:
-            if mode == "🪞 魔镜模式":
-                result = image.copy()
-                for face, probs in zip(faces, emotions):
-                    top = max(probs, key=probs.get)
-                    result = apply_mood_filter(result, top)
-                    result = make_emoji_overlay(result, face, top)
-            else:
-                result = draw_face_boxes(image, faces, emotions)
-            st.image(cv2.cvtColor(result, cv2.COLOR_BGR2RGB),
-                     caption=f"检测到 {len(faces)} 张人脸", use_container_width=True)
-        with col_b:
-            save_records(faces, emotions, "camera")
-            show_stats()
+elif input_type == "🎥 实时摄像头":
+    # 开关按钮
+    running = st.session_state.cam is not None
+    if st.button("⏹ 关闭摄像头" if running else "▶ 开启实时摄像头"):
+        if running:
+            st.session_state.cam.release()
+            st.session_state.cam = None
+        else:
+            st.session_state.cam = cv2.VideoCapture(0)
+        st.rerun()
+
+    # 实时显示
+    if st.session_state.cam is not None:
+        cam = st.session_state.cam
+        ret, frame = cam.read()
+        if ret:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            faces, emotions = process_frame(rgb)
+
+            col_a, col_b = st.columns([2, 1])
+            with col_a:
+                result = render_result(rgb, faces, emotions)
+                st.image(result, caption=f"实时检测 | 人脸: {len(faces)} | 已记录: {analyzer.get_summary()['total_people']}人次",
+                         use_container_width=True)
+            with col_b:
+                if faces:
+                    save_records(faces, emotions, "camera")
+                show_stats()
+
+            time.sleep(0.08)  # ~12fps
+            st.rerun()
+        else:
+            st.error("无法读取摄像头，请检查权限")
+            st.session_state.cam.release()
+            st.session_state.cam = None
     else:
-        st.info("👆 请点击上方按钮拍照")
+        st.info("👆 点击「开启实时摄像头」开始实时人脸表情检测")
