@@ -9,10 +9,7 @@ from io import StringIO
 from PIL import Image
 import time
 
-from face_detector import (
-    detect_faces, extract_face_roi, Face,
-    estimate_head_pose, classify_head_pose,
-)
+import face_detector
 from expression_recognizer import ExpressionRecognizer, EMOTIONS
 from analyzer import ResultAnalyzer
 from utils import (
@@ -87,7 +84,7 @@ with st.sidebar:
 
 # ── 处理函数 ──
 def process_frame(image):
-    faces = detect_faces(image)
+    faces = face_detector.detect_faces(image)
     emotions = []
     valid_faces = []
     head_up = 0
@@ -95,7 +92,7 @@ def process_frame(image):
     for face in faces:
         if face.confidence < threshold:
             continue
-        roi = extract_face_roi(image, face)
+        roi = face_detector.extract_face_roi(image, face)
         if roi.size == 0:
             continue
         try:
@@ -103,8 +100,8 @@ def process_frame(image):
             emotions.append(probs)
             valid_faces.append(face)
             # 头部姿态估计
-            pitch, yaw, roll = estimate_head_pose(face, image.shape)
-            status = classify_head_pose(pitch)
+            pitch, yaw, roll = face_detector.estimate_head_pose(face, image.shape)
+            status = face_detector.classify_head_pose(pitch)
             if status == "低头":
                 head_down += 1
             elif status == "抬头":
