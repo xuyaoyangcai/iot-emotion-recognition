@@ -123,19 +123,17 @@ def process_frame(image):
         if roi.size == 0:
             continue
         try:
-            probs = st.session_state.recognizer.recognize(roi)
-            emotions.append(probs)
-            valid_faces.append(face)
-            # 头部姿态估计
+            # 先计算头姿态（快速），再结合表情识别
             pitch, yaw, roll = face_detector.estimate_head_pose(face, image.shape)
             far = face_detector.face_aspect_ratio(face)
             status = face_detector.classify_head_pose(pitch, face_ar=far)
+            probs = st.session_state.recognizer.recognize(roi, head_status=status)
+            emotions.append(probs)
+            valid_faces.append(face)
             if status == "低头":
                 head_down += 1
-            elif status == "抬头":
-                head_up += 1
             else:
-                head_up += 1  # 正常算抬头
+                head_up += 1  # 抬头 + 正常 = 在听讲
         except Exception:
             continue
     return valid_faces, emotions, head_up, head_down
@@ -485,15 +483,16 @@ elif input_type == "🎥 实时摄像头":
                         if roi.size == 0:
                             continue
                         try:
-                            probs = _cam_recognizer.recognize(roi)
-                            emotions.append(probs)
+                            # 先计算头姿态（快速），传入识别器做上下文修正
                             pitch, _, _ = face_detector.estimate_head_pose(face, snap.shape)
                             far = face_detector.face_aspect_ratio(face)
                             status = face_detector.classify_head_pose(pitch, face_ar=far)
+                            probs = _cam_recognizer.recognize(roi, head_status=status)
+                            emotions.append(probs)
                             if status == "低头":
                                 head_down += 1
                             else:
-                                head_up += 1
+                                head_up += 1  # 抬头 + 正常 = 在听讲
                         except Exception:
                             continue
 

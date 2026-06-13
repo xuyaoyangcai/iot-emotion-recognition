@@ -57,8 +57,8 @@ class ExpressionRecognizer:
             device=-1,
         )
 
-    def recognize(self, face_img: np.ndarray) -> dict[str, float]:
-        """TTA 增强识别：7个变体综合预测 + 温度缩放 + Neutral 惩罚"""
+    def recognize(self, face_img: np.ndarray, head_status: str = None) -> dict[str, float]:
+        """TTA 增强识别：7个变体 + 温度缩放 + 强化 Neutral 压制 + 头姿态上下文"""
         variants = _augment_variants(face_img)
 
         accumulated = {emotion: 0.0 for emotion in EMOTIONS}
@@ -69,33 +69,48 @@ class ExpressionRecognizer:
                 if label in _LABEL_MAP:
                     accumulated[_LABEL_MAP[label]] += pred["score"]
 
-        # 归一化
         total = sum(accumulated.values())
         if total == 0:
             return accumulated
         probs = {k: v / total for k, v in accumulated.items()}
 
-        # 温度缩放 (T=0.6)：压缩高值，拉大差距，让模型更"果断"
-        t = 0.6
+        # 温度缩放 (T=0.35)：更"果断"，拉开类别差距
+        t = 0.35
         probs = {k: v ** (1.0 / t) for k, v in probs.items()}
         total = sum(probs.values())
         probs = {k: v / total for k, v in probs.items()}
 
-        # Neutral 惩罚：如果 Neutral 最高但不够确信，降级
+        # 强化 Neutral 压制（始终生效，不只是 Neutral 排第一时）
         top = max(probs, key=probs.get)
+        sorted_items = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+        neutral_val = probs.get("Neutral", 0)
+        runner_up = sorted_items[1][0] if sorted_items[0][0] == "Neutral" else sorted_items[0][0]
+        runner_up_val = probs.get(runner_up, 0)
+
         if top == "Neutral":
-            sorted_items = sorted(probs.items(), key=lambda x: x[1], reverse=True)
-            neutral_conf = sorted_items[0][1]
-            runner_up = sorted_items[1][0]
-            runner_up_conf = sorted_items[1][1]
-            # Neutral 与第二名差距很小 → 选第二名
-            if neutral_conf - runner_up_conf < 0.05:
-                probs["Neutral"] *= 0.5
+            gap = sorted_items[0][1] - sorted_items[1][1]
+            if gap < 0.10:
+                probs["Neutral"] *= 0.3
+                probs[runner_up] *= 1.4
+            elif neutral_val < 0.40:
+                probs["Neutral"] *= 0.4
                 probs[runner_up] *= 1.3
-            # Neutral 置信度不够高 → 降权
-            elif neutral_conf < 0.35:
-                probs["Neutral"] *= 0.6
+            elif neutral_val < 0.50:
+                probs["Neutral"] *= 0.5
                 probs[runner_up] *= 1.2
+        else:
+            # Neutral 不是第一但也偏高 (>25%)，压制
+            if neutral_val > 0.25:
+                probs["Neutral"] *= 0.7
+
+        # 头姿态上下文修正: 低头→Sad/Angry倾向，抬头→Surprise/Happy倾向
+        if head_status == "低头":
+            probs["Sad"] = probs.get("Sad", 0) * 1.3
+            probs["Angry"] = probs.get("Angry", 0) * 1.2
+            probs["Happy"] = probs.get("Happy", 0) * 0.7
+        elif head_status == "抬头":
+            probs["Happy"] = probs.get("Happy", 0) * 1.2
+            probs["Surprise"] = probs.get("Surprise", 0) * 1.2
 
         # 重新归一化
         total = sum(probs.values())

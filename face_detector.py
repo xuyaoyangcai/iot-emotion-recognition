@@ -146,17 +146,19 @@ def face_aspect_ratio(face: Face) -> float:
     return h_box / w_box
 
 
-def classify_head_pose(pitch: float, threshold: float = 20.0,
+def classify_head_pose(pitch: float, threshold: float = 12.0,
                        face_ar: float = None) -> str:
     """
     综合俯仰角 + 脸部宽高比判断头部状态
     pitch > threshold  → "低头"
     pitch < -threshold → "抬头"
-    如果 face_ar 明显偏小 (< 1.1)，降低低头判定阈值
+    如果 face_ar 明显偏小，直接判为低头
     """
-    # 脸部宽高比辅助：正常脸约 1.2~1.4，低头时 < 1.1
+    # 脸部宽高比辅助：正常脸约 1.2~1.4，低头时 < 1.05
     if face_ar is not None and face_ar < 1.05:
-        threshold = threshold * 0.7  # 更容易判低头
+        return "低头"
+    if face_ar is not None and face_ar < 1.10:
+        threshold = threshold * 0.6
 
     if pitch > threshold:
         return "低头"
