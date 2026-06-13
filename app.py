@@ -1,3 +1,10 @@
+import sys, os
+sys.dont_write_bytecode = True
+for _m in ['classroom_state', 'face_detector', 'analyzer', 'utils', 'expression_recognizer']:
+    _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), '__pycache__', f'{_m}.cpython-311.pyc')
+    if os.path.exists(_p):
+        os.remove(_p)
+
 import streamlit as st
 import cv2
 import numpy as np
