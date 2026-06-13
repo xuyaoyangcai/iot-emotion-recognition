@@ -562,7 +562,7 @@ elif input_type == "🎥 实时摄像头":
     )
 
     # 统计面板放在 fragment 中，每2秒自动刷新，不影响视频流
-    @st.experimental_fragment(run_every=2)
+    @st.fragment(run_every=2)
     def _cam_stats_panel():
         result_queue = st.session_state.cam_result_queue
         processed = 0
