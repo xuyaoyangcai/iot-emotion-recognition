@@ -123,10 +123,13 @@ def process_frame(image):
         if roi.size == 0:
             continue
         try:
-            # 先计算头姿态（快速），再结合表情识别
-            pitch, yaw, roll = face_detector.estimate_head_pose(face, image.shape)
-            far = face_detector.face_aspect_ratio(face)
-            status = face_detector.classify_head_pose(pitch, face_ar=far)
+            # 头姿态估计（可能因关键点质量失败，不影响表情识别）
+            try:
+                pitch, _, _ = face_detector.estimate_head_pose(face, image.shape)
+                far = face_detector.face_aspect_ratio(face)
+                status = face_detector.classify_head_pose(pitch, face_ar=far)
+            except Exception:
+                status = "正常"
             probs = st.session_state.recognizer.recognize(roi, head_status=status)
             emotions.append(probs)
             valid_faces.append(face)
@@ -483,10 +486,13 @@ elif input_type == "🎥 实时摄像头":
                         if roi.size == 0:
                             continue
                         try:
-                            # 先计算头姿态（快速），传入识别器做上下文修正
-                            pitch, _, _ = face_detector.estimate_head_pose(face, snap.shape)
-                            far = face_detector.face_aspect_ratio(face)
-                            status = face_detector.classify_head_pose(pitch, face_ar=far)
+                            # 头姿态（可能失败，不影响表情识别）
+                            try:
+                                pitch, _, _ = face_detector.estimate_head_pose(face, snap.shape)
+                                far = face_detector.face_aspect_ratio(face)
+                                status = face_detector.classify_head_pose(pitch, face_ar=far)
+                            except Exception:
+                                status = "正常"
                             probs = _cam_recognizer.recognize(roi, head_status=status)
                             emotions.append(probs)
                             if status == "低头":

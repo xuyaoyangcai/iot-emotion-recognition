@@ -113,7 +113,7 @@ def estimate_head_pose(face: Face, image_shape: tuple) -> tuple:
     success, rvec, tvec = cv2.solvePnP(
         _MODEL_POINTS, face.landmarks,
         camera_matrix, dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE,
+        flags=cv2.SOLVEPNP_EPNP,
     )
 
     if not success:
