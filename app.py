@@ -24,6 +24,48 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── IoT 深色主题 ───────────────────────────────
+st.markdown("""
+<style>
+    .stApp {
+        background: linear-gradient(135deg, #0a0a1a 0%, #1a1a2e 50%, #16213e 100%);
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #00d4ff;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 1rem;
+        color: #8892b0;
+    }
+    .stButton > button {
+        border-radius: 8px;
+        border: 1px solid #00d4ff40;
+        background: linear-gradient(135deg, #1a1a2e, #16213e);
+        color: #ccd6f6;
+    }
+    .stButton > button:hover {
+        border-color: #00d4ff;
+        color: #00d4ff;
+    }
+    h1, h2, h3 {
+        color: #ccd6f6 !important;
+    }
+    .stCaption {
+        color: #8892b0 !important;
+    }
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+        border-right: 1px solid #30363d;
+    }
+    [data-testid="stSidebar"] * {
+        color: #c9d1d9;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ── 全局状态初始化 ────────────────────────────
 if "analyzer" not in st.session_state:
     st.session_state.analyzer = ResultAnalyzer()
@@ -92,13 +134,33 @@ def process_frame(image: np.ndarray):
     return faces, emotions
 
 
+def get_danmaku(emotion):
+    """返回表情对应的趣味文字"""
+    danmaku_map = {
+        "Happy": "今天很开心! ✨",
+        "Sad": "有点emo... 😔",
+        "Angry": "别惹我! 💢",
+        "Surprise": "真的假的!? 😲",
+        "Fear": "好可怕! 🙀",
+        "Disgust": "咦~受不了 🤢",
+        "Neutral": "淡定... 😐",
+    }
+    return danmaku_map.get(emotion, "")
+
+
 def draw_results_mirror(image, faces, emotions):
-    """魔镜模式渲染"""
+    """魔镜模式渲染 — 加弹幕文字"""
     img = image.copy()
     for face, probs in zip(faces, emotions):
         top_emo = max(probs, key=probs.get)
         img = apply_mood_filter(img, top_emo)
         img = make_emoji_overlay(img, face, top_emo)
+        # 弹幕文字
+        danmaku = get_danmaku(top_emo)
+        x1, y1, x2, y2 = face.bbox
+        cv2.putText(img, danmaku, (x1, y2 + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    EMOTION_COLORS.get(top_emo, (255, 255, 255)), 2)
     return img
 
 
