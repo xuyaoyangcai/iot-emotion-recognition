@@ -68,40 +68,56 @@ class ExpressionRecognizer:
             return {e: 0.0 for e in EMOTIONS}
         probs = {k: v / total for k, v in probs.items()}
 
-        # 温度缩放
-        t = 0.35
+        # 温度缩放（温和，避免过度放大微小差异）
+        t = 0.55
         probs = {k: v ** (1.0 / t) for k, v in probs.items()}
         total = sum(probs.values())
         probs = {k: v / total for k, v in probs.items()}
 
-        # Neutral 压制
+        # Neutral / Sad 过触发压制
         top = max(probs, key=probs.get)
         sorted_items = sorted(probs.items(), key=lambda x: x[1], reverse=True)
         neutral_val = probs.get("Neutral", 0)
+        sad_val = probs.get("Sad", 0)
         runner_up = sorted_items[1][0] if sorted_items[0][0] == "Neutral" else sorted_items[0][0]
 
         if top == "Neutral":
             gap = sorted_items[0][1] - sorted_items[1][1]
             if gap < 0.10:
-                probs["Neutral"] *= 0.3
-                probs[runner_up] *= 1.4
+                probs["Neutral"] *= 0.35
+                probs[runner_up] *= 1.15
             elif neutral_val < 0.40:
-                probs["Neutral"] *= 0.4
-                probs[runner_up] *= 1.3
+                probs["Neutral"] *= 0.45
+                probs[runner_up] *= 1.10
             elif neutral_val < 0.50:
-                probs["Neutral"] *= 0.5
-                probs[runner_up] *= 1.2
+                probs["Neutral"] *= 0.55
+                probs[runner_up] *= 1.05
         elif neutral_val > 0.25:
-            probs["Neutral"] *= 0.7
+            probs["Neutral"] *= 0.75
 
-        # 头姿态上下文
-        if head_status == "低头":
-            probs["Sad"] = probs.get("Sad", 0) * 1.3
-            probs["Angry"] = probs.get("Angry", 0) * 1.2
-            probs["Happy"] = probs.get("Happy", 0) * 0.7
-        elif head_status == "抬头":
-            probs["Happy"] = probs.get("Happy", 0) * 1.2
-            probs["Surprise"] = probs.get("Surprise", 0) * 1.2
+        # Sad 系统性偏置修正：该模型天然偏向 Sad
+        # 课堂场景下真正的悲伤表情极为罕见，中性/专注脸常被误判
+        sad_val = probs.get("Sad", 0)
+        if sad_val > 0.15:
+            if top == "Sad" and sad_val > 0.50:
+                gap = sorted_items[0][1] - sorted_items[1][1]
+                if gap > 0.30:
+                    # 模型极度自信 Sad → 转移概率到 Neutral
+                    transfer = sad_val * 0.70
+                    probs["Sad"] -= transfer
+                    probs["Neutral"] = probs.get("Neutral", 0) + transfer * 0.7
+                    probs["Happy"] = probs.get("Happy", 0) + transfer * 0.3
+                else:
+                    probs["Sad"] *= 0.40
+            elif top == "Sad":
+                probs["Sad"] *= 0.50
+            else:
+                probs["Sad"] *= 0.65
+
+        # 头姿态上下文：课堂低头=看书/写字，不关联 Sad
+        if head_status == "抬头":
+            probs["Happy"] = probs.get("Happy", 0) * 1.05
+            probs["Surprise"] = probs.get("Surprise", 0) * 1.05
 
         total = sum(probs.values())
         return {k: v / total for k, v in probs.items()}

@@ -4,6 +4,28 @@ from PIL import Image, ImageDraw, ImageFont
 from face_detector import Face
 from expression_recognizer import EMOTIONS
 
+# 中文字体（Windows 默认）
+try:
+    _CN_FONT = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 24)
+    _CN_FONT_SM = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 18)
+except (OSError, IOError):
+    _CN_FONT = ImageFont.load_default()
+    _CN_FONT_SM = ImageFont.load_default()
+
+
+def _pil_draw_text(img_bgr, text, x, y, font, text_color, bg_color):
+    """用 PIL 在 OpenCV BGR 图像上绘制文字（支持中文），返回文字宽高"""
+    pil_img = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    # 背景
+    draw.rectangle([x, y, x + tw + 6, y + th + 4], fill=bg_color[::-1])  # BGR→RGB
+    draw.text((x + 3, y + 1), text, fill=text_color[::-1], font=font)
+    rgb = np.array(pil_img)
+    img_bgr[:, :, :] = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    return tw + 6, th + 4
+
 # 表情 → 颜色映射 (BGR)
 EMOTION_COLORS = {
     "Happy": (0, 215, 255),     # 金色
@@ -33,6 +55,25 @@ CLASSROOM_STATE_COLORS = {
     "课堂状态较低落或需要关注": "#F44336",
     "课堂注意力波动较大": "#FF5722",
     "未检测到学生": "#9E9E9E",
+}
+
+# 课堂复合情绪 → 颜色映射 (BGR)
+COMPOSITE_EMOTION_COLORS = {
+    "Focused":     (100, 200, 0),     # green
+    "Distracted":  (255, 100, 0),     # orange-red
+    "Engaged":     (255, 215, 0),     # gold
+    "Confused":    (0, 120, 255),     # orange
+    "Thinking":    (50, 150, 200),    # blue-gray
+    "Tired":       (150, 50, 100),    # dark blue
+}
+
+COMPOSITE_EMOTION_EMOJI = {
+    "Focused":     "🎯",
+    "Distracted":  "👀",
+    "Engaged":     "🙋",
+    "Confused":    "🤔",
+    "Thinking":    "💭",
+    "Tired":       "😴",
 }
 
 # 表情 → 滤镜色调 (RGB 偏色系数)

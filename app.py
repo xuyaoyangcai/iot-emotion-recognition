@@ -27,7 +27,9 @@ from analyzer import ResultAnalyzer
 from utils import (
     draw_face_boxes, apply_mood_filter,
     make_emoji_overlay, EMOTION_COLORS, CLASSROOM_STATE_COLORS,
+    COMPOSITE_EMOTION_COLORS, COMPOSITE_EMOTION_EMOJI,
 )
+from gaze_emotion import classify_classroom_emotion, top_classroom_emotion, CLASSROOM_EMOTIONS
 from classroom_state import (
     aggregate_per_frame, compute_sliding_window, WarningTracker,
     classify_classroom_state,
@@ -95,24 +97,16 @@ with st.sidebar:
                            f"timeline_{datetime.now():%Y%m%d_%H%M%S}.csv",
                            mime="text/csv")
 
-# ── 辅助函数 ──
 def _classify(per_frame):
-    """调用 classify_classroom_state，兼容新旧签名"""
-    import inspect
-    try:
-        sig = inspect.signature(classify_classroom_state)
-        if len(sig.parameters) >= 3:
-            return classify_classroom_state(per_frame.counts, per_frame.total_faces, per_frame.head_up_rate)
-        else:
-            return classify_classroom_state(per_frame.counts, per_frame.total_faces)
-    except Exception:
-        return classify_classroom_state(per_frame.counts, per_frame.total_faces)
+    """课堂状态分类，传入抬头率"""
+    return classify_classroom_state(per_frame.counts, per_frame.total_faces, per_frame.head_up_rate)
 
 
 # ── 处理函数 ──
 def process_frame(image):
     faces = face_detector.detect_faces(image)
     emotions = []
+    composite_emotions = []
     valid_faces = []
     head_up = 0
     head_down = 0
@@ -125,13 +119,20 @@ def process_frame(image):
         try:
             # 头姿态估计（可能因关键点质量失败，不影响表情识别）
             try:
-                pitch, _, _ = face_detector.estimate_head_pose(face, image.shape)
+                pitch, yaw, _ = face_detector.estimate_head_pose(face, image.shape)
                 far = face_detector.face_aspect_ratio(face)
                 status = face_detector.classify_head_pose(pitch, face_ar=far)
             except Exception:
+                pitch, yaw = 0.0, 0.0
                 status = "正常"
             probs = st.session_state.recognizer.recognize(roi, head_status=status)
             emotions.append(probs)
+
+            # 课堂复合情绪（表情 + 头姿态）
+            comp = classify_classroom_emotion(probs, yaw, pitch)
+            comp_top = max(comp, key=comp.get) if comp else "N/A"
+            composite_emotions.append({"scores": comp, "top": comp_top, "yaw": yaw, "pitch": pitch})
+
             valid_faces.append(face)
             if status == "低头":
                 head_down += 1
@@ -139,7 +140,7 @@ def process_frame(image):
                 head_up += 1  # 抬头 + 正常 = 在听讲
         except Exception:
             continue
-    return valid_faces, emotions, head_up, head_down
+    return valid_faces, emotions, head_up, head_down, composite_emotions
 
 
 def save_records(faces, emotions, source):
@@ -149,7 +150,7 @@ def save_records(faces, emotions, source):
         analyzer.add_record(ts, source, i + 1, top, probs[top])
 
 
-def render_result(image, faces, emotions):
+def render_result(image, faces, emotions, composite_emotions=None):
     if mode == "🪞 魔镜模式":
         result = image.copy()
         for face, probs in zip(faces, emotions):
@@ -158,7 +159,36 @@ def render_result(image, faces, emotions):
             result = make_emoji_overlay(result, face, top)
         return result
     else:
-        return draw_face_boxes(image, faces, emotions)
+        # 仪表盘模式 — 画基本表情框 + 复合情绪标签
+        img = image.copy()
+        comp_list = composite_emotions or []
+        for i, (face, probs) in enumerate(zip(faces, emotions)):
+            x1, y1, x2, y2 = face.bbox
+            top_emo = max(probs, key=probs.get)
+            color = EMOTION_COLORS.get(top_emo, (0, 255, 0))
+
+            # 画人脸框
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+            # 第一行：基础表情
+            label1 = f"{top_emo} ({face.confidence:.0%})"
+            (tw, th), _ = cv2.getTextSize(label1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+            cv2.rectangle(img, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
+            cv2.putText(img, label1, (x1 + 2, y1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
+            # 第二行：复合情绪（上方，留足间距不遮挡基础表情）
+            if i < len(comp_list) and comp_list[i]["top"] != "N/A":
+                comp_top = comp_list[i]["top"]
+                comp_color = COMPOSITE_EMOTION_COLORS.get(comp_top, (0, 255, 0))
+                label2 = f"{comp_top}"
+                (tw2, th2), _ = cv2.getTextSize(label2, cv2.FONT_HERSHEY_DUPLEX, 0.55, 2)
+                gap = th + 14
+                cv2.rectangle(img, (x1, y1 - gap - th2 - 6), (x1 + tw2 + 6, y1 - gap),
+                            comp_color, -1)
+                cv2.putText(img, label2, (x1 + 3, y1 - gap - 2),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.55, (255, 255, 255), 2)
+        return img
 
 
 def show_stats():
@@ -287,7 +317,7 @@ if input_type == "📷 上传图片":
     file = st.file_uploader("上传图片", type=["jpg", "jpeg", "png"])
     if file:
         image = cv2.cvtColor(np.array(Image.open(file).convert("RGB")), cv2.COLOR_RGB2BGR)
-        faces, emotions, head_up, head_down = process_frame(image)
+        faces, emotions, head_up, head_down, composite_emotions = process_frame(image)
 
         # 帧级聚合
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -300,11 +330,20 @@ if input_type == "📷 上传图片":
         analyzer.add_frame_record(per_frame)
         tracker.feed(per_frame.classroom_state)
 
-        result = render_result(image, faces, emotions)
+        result = render_result(image, faces, emotions, composite_emotions)
         st.image(cv2.cvtColor(result, cv2.COLOR_BGR2RGB),
                  caption=f"检测: {per_frame.total_faces}人 | 抬头率: {per_frame.head_up_rate*100:.0f}% | 课堂状态: {per_frame.classroom_state}",
                  use_container_width=True)
         save_records(faces, emotions, file.name)
+
+        # 显示复合情绪分布
+        if composite_emotions:
+            comp_counts = {}
+            for ce in composite_emotions:
+                t = ce["top"]
+                comp_counts[t] = comp_counts.get(t, 0) + 1
+            comp_str = " | ".join(f"{COMPOSITE_EMOTION_EMOJI.get(k,'')} {k}:{v}" for k, v in sorted(comp_counts.items(), key=lambda x: -x[1]))
+            st.caption(f"课堂情绪: {comp_str}")
         show_stats()
     else:
         st.info("👆 请上传一张包含多人的课堂图片")
@@ -352,7 +391,7 @@ elif input_type == "🎬 上传视频":
 
             processed += 1
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces, emotions, head_up, head_down = process_frame(rgb)
+            faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
 
             elapsed = processed * (frame_interval / fps)
 
@@ -375,7 +414,7 @@ elif input_type == "🎬 上传视频":
             level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(warning_level, "⚪")
 
             # 显示当前帧
-            result = render_result(rgb, faces, emotions)
+            result = render_result(rgb, faces, emotions, composite_emotions)
             slot_img.image(result, use_container_width=True)
             slot_status.markdown(
                 f"**帧 {processed}/{sampled}** | 检测: {per_frame.total_faces}人 | "
@@ -480,6 +519,7 @@ elif input_type == "🎥 实时摄像头":
 
                 try:
                     emotions = []
+                    composite_emotions = []
                     head_up, head_down = 0, 0
                     for face in snap_faces:
                         roi = face_detector.extract_face_roi(snap, face)
@@ -488,13 +528,20 @@ elif input_type == "🎥 实时摄像头":
                         try:
                             # 头姿态（可能失败，不影响表情识别）
                             try:
-                                pitch, _, _ = face_detector.estimate_head_pose(face, snap.shape)
+                                pitch, yaw, _ = face_detector.estimate_head_pose(face, snap.shape)
                                 far = face_detector.face_aspect_ratio(face)
                                 status = face_detector.classify_head_pose(pitch, face_ar=far)
                             except Exception:
+                                pitch, yaw = 0.0, 0.0
                                 status = "正常"
                             probs = _cam_recognizer.recognize(roi, head_status=status)
                             emotions.append(probs)
+
+                            # 课堂复合情绪
+                            comp = classify_classroom_emotion(probs, yaw, pitch)
+                            comp_top = max(comp, key=comp.get) if comp else "N/A"
+                            composite_emotions.append({"scores": comp, "top": comp_top, "yaw": yaw, "pitch": pitch})
+
                             if status == "低头":
                                 head_down += 1
                             else:
@@ -505,15 +552,22 @@ elif input_type == "🎥 实时摄像头":
                     if emotions:
                         with self._lock:
                             self._last_emotions = emotions
+                            self._last_composite = composite_emotions
                             self._analysis_count += 1
                             hr = round(head_up / (head_up + head_down), 3) \
                                 if (head_up + head_down) > 0 else 1.0
+                            # 显示复合情绪占比
+                            comp_counts = {}
+                            for ce in composite_emotions:
+                                comp_counts[ce["top"]] = comp_counts.get(ce["top"], 0) + 1
+                            comp_summary = " ".join(f"{COMPOSITE_EMOTION_EMOJI.get(k,'')}{v}" for k, v in sorted(comp_counts.items(), key=lambda x: -x[1])[:2])
                             self._last_caption = (
-                                f"实时 | 人脸:{len(emotions)} | 抬头率:{hr*100:.0f}%"
+                                f"实时 | 人脸:{len(emotions)} | 抬头率:{hr*100:.0f}% | {comp_summary}"
                                 f" | 分析#{self._analysis_count}"
                             )
                         _cam_result_queue.put({
                             "emotions": emotions,
+                            "composite_emotions": composite_emotions,
                             "head_up": head_up,
                             "head_down": head_down,
                             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -538,21 +592,48 @@ elif input_type == "🎥 实时摄像头":
                     self._snap_img = img.copy()
                     self._snap_faces = list(faces)
                     emo_disp = list(self._last_emotions)
+                    comp_disp = list(getattr(self, "_last_composite", []) or [])
                     caption = self._last_caption
 
-                # 始终画框（即使还没分析结果，也显示检测框）
+                # 始终画框（即使还没分析结果，也显示复合情绪标签）
                 if faces:
                     if emo_disp:
                         disp = emo_disp[:len(faces)]
+                        comp = comp_disp[:len(faces)]
                     else:
                         disp = []
+                        comp = []
                     while len(disp) < len(faces):
                         disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
                                     "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
-                    img = draw_face_boxes(img, faces, disp)
+                    # 画框 + 复合情绪标签
+                    for i, face in enumerate(faces):
+                        x1, y1, x2, y2 = face.bbox
+                        probs = disp[i] if i < len(disp) else {"Neutral": 1.0}
+                        top_emo = max(probs, key=probs.get) if probs else "Neutral"
+                        color = EMOTION_COLORS.get(top_emo, (0, 255, 0))
 
-                # 左下角显示调试信息
-                dbg = f"F#{self._recv_count} | 人脸:{len(faces)} | 分析#{self._analysis_count}"
+                        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                        label1 = f"{top_emo} ({face.confidence:.0%})"
+                        (tw, th), _ = cv2.getTextSize(label1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                        cv2.rectangle(img, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
+                        cv2.putText(img, label1, (x1 + 2, y1 - 4),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
+                        # 第二行：复合情绪
+                        if i < len(comp) and comp[i].get("top") != "N/A":
+                            comp_top = comp[i]["top"]
+                            comp_color = COMPOSITE_EMOTION_COLORS.get(comp_top, (0, 255, 0))
+                            label2 = f"{comp_top}"
+                            (tw2, th2), _ = cv2.getTextSize(label2, cv2.FONT_HERSHEY_DUPLEX, 0.55, 2)
+                            gap = th + 14
+                            cv2.rectangle(img, (x1, y1 - gap - th2 - 6), (x1 + tw2 + 6, y1 - gap),
+                                        comp_color, -1)
+                            cv2.putText(img, label2, (x1 + 3, y1 - gap - 2),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+                # 左下角调试信息 + 顶部状态栏
+                dbg = f"F#{self._recv_count} | Faces:{len(faces)} | A#{self._analysis_count}"
                 cv2.putText(img, dbg, (10, h - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
                 if caption:
@@ -579,7 +660,7 @@ elif input_type == "🎥 实时摄像头":
         while not result_queue.empty() and processed < 10:
             try:
                 r = result_queue.get_nowait()
-                per_frame = aggregate_per_frame(r["emotions"], analyzer.total_frames + 1,
+                per_frame = aggregate_per_frame(r["emotions"], len(analyzer.frame_records) + 1,
                                                 time.time(), r["ts"], "camera")
                 _hp = r["head_up"] + r["head_down"]
                 per_frame.head_up_count = r["head_up"]
