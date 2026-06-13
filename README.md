@@ -1,26 +1,29 @@
-# 🎭 智能表情识别系统
+# 🏫 课堂状态分析系统
 
-物联网课程期末大作业 — 基于深度学习的实时人脸表情识别系统。
+物联网课程期末大作业 — 基于表情识别 + 头姿态估计的课堂状态实时分析系统。
 
 ## 功能
 
-- **双模式UI**：魔镜模式（emoji贴纸+弹幕+滤镜互动）+ 仪表盘模式（IoT监控风统计）
-- **多输入源**：图片上传 / 视频上传 / 实时摄像头拍照
-- **7种表情识别**：Happy, Neutral, Sad, Angry, Surprise, Fear, Disgust
-- **实时统计**：表情计数、占比、主导表情、时间序列
-- **CSV导出**：完整检测记录导出
+- **多输入源**：图片 / 视频 / 实时摄像头（WebRTC 流畅推流）
+- **双模式 UI**：仪表盘模式（统计分析）+ 魔镜模式（emoji + 滤镜互动）
+- **7 种基础表情**：Happy, Neutral, Sad, Angry, Surprise, Fear, Disgust（GPU 批量推理）
+- **6 种课堂复合情绪**：Focused, Distracted, Engaged, Confused, Thinking, Tired（表情 + yaw/pitch 融合）
+- **头姿态估计**：YuNet 5 点关键点 + solvePnP → pitch/yaw/roll，含抬头率统计
+- **课堂状态分类**：良好 / 平稳 / 较低落 / 注意力波动 / 未检测到学生（含低头率阈值）
+- **1fps 视频采样**：按视频帧率自适应采样，避免重复处理
+- **5 帧滑动窗口**：窗口内表情均值/方差统计，状态突变检测
+- **三级预警追踪**：Green / Yellow / Red，连续帧状态累积触发
+- **Plotly 时序图**：表情占比折线 + 抬头率曲线 + 预警区域标记
+- **CSV 导出**：课堂状态 CSV + 时序分析 CSV
 
 ## 快速开始
 
 ```bash
-# 安装依赖
 pip install -r requirements.txt
-
-# 启动应用
 streamlit run app.py
 ```
 
-首次运行会自动下载 HuggingFace 预训练模型（约 300MB）。国内用户可设置镜像：
+首次运行自动加载 HuggingFace 模型（~300MB）和 YuNet ONNX 模型。国内用户：
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
@@ -30,33 +33,29 @@ streamlit run app.py
 ## 项目结构
 
 ```
-app.py                    # Streamlit 主界面（双模式）
-face_detector.py          # 人脸检测（OpenCV Haar Cascade）
-expression_recognizer.py  # 表情识别（HuggingFace ViT）
-analyzer.py               # 统计分析器
-utils.py                  # 辅助函数（画框/滤镜/emoji）
+app.py                    # Streamlit 主界面
+face_detector.py          # 人脸检测（YuNet ONNX）+ 头姿态估计（solvePnP）
+expression_recognizer.py  # 表情识别（HuggingFace ViT，GPU 批量 TTA）
+gaze_emotion.py           # 课堂复合情绪（表情 + yaw/pitch 融合推导）
+classroom_state.py        # 课堂状态分类 + 滑动窗口 + 预警追踪
+analyzer.py               # 统计分析 + CSV 导出
+utils.py                  # 画框 / 滤镜 / emoji / 颜色映射
 tests/                    # 单元测试
 test_images/              # 测试图片
-test_videos/              # 测试视频
-results/                  # 输出结果
 ```
 
 ## 技术栈
 
 | 组件 | 技术 |
 |------|------|
-| 人脸检测 | OpenCV Haar Cascade |
+| 人脸检测 | OpenCV YuNet DNN (ONNX) |
+| 关键点 & 头姿态 | YuNet 5点 + solvePnP (EPNP) |
 | 表情识别 | HuggingFace ViT (dima806/facial_emotions_image_detection) |
-| UI 框架 | Streamlit |
+| GPU 推理 | PyTorch 2.6 + CUDA 12.4 (RTX 4060) |
+| 摄像头 | streamlit-webrtc (WebRTC 异步推流) |
+| UI | Streamlit 1.58 + @st.fragment |
 | 图表 | Plotly |
 | 图像处理 | OpenCV + Pillow |
-
-## 使用说明
-
-1. 启动应用后，在侧边栏选择模式（魔镜/仪表盘）和输入源（图片/视频/摄像头）
-2. **魔镜模式**：检测人脸后叠加 emoji 贴纸、表情滤镜和弹幕文字
-3. **仪表盘模式**：显示检测框、标签、统计图表和 CSV 记录
-4. 侧边栏可调整检测阈值、重置统计、导出 CSV
 
 ## 运行测试
 
