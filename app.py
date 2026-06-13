@@ -258,7 +258,7 @@ if input_type == "📷 上传图片":
         # 帧级聚合
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         per_frame = aggregate_per_frame(emotions, 1, 0, ts, file.name,
-                                        head_up, head_down)
+                                        head_up=head_up, head_down=head_down)
         analyzer.add_frame_record(per_frame)
         tracker.feed(per_frame.classroom_state)
 
@@ -322,7 +322,7 @@ elif input_type == "🎬 上传视频":
                 emotions, processed, elapsed,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 file.name,
-                head_up, head_down,
+                head_up=head_up, head_down=head_down,
             )
             analyzer.add_frame_record(per_frame)
             frame_data.append(per_frame)
@@ -442,7 +442,7 @@ elif input_type == "🎥 实时摄像头":
             per_frame = aggregate_per_frame(
                 emotions, frame_count, frame_count * 0.08,
                 ts, "camera",
-                head_up, head_down,
+                head_up=head_up, head_down=head_down,
             )
             analyzer.add_frame_record(per_frame)
             tracker.feed(per_frame.classroom_state)
