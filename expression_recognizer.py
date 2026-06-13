@@ -50,11 +50,13 @@ def _augment_variants(face_img: np.ndarray) -> list[Image.Image]:
 
 
 class ExpressionRecognizer:
-    def __init__(self, model_name: str = "dima806/facial_emotions_image_detection"):
+    def __init__(self, model_name: str = "dima806/facial_emotions_image_detection", device: int = 0):
+        import torch
+        _device = device if torch.cuda.is_available() else -1
         self._pipe = pipeline(
             "image-classification",
             model=model_name,
-            device=-1,
+            device=_device,
         )
 
     def recognize(self, face_img: np.ndarray, head_status: str = None) -> dict[str, float]:
