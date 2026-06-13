@@ -21,7 +21,8 @@ class ExpressionRecognizer:
         self._pipe = pipeline(
             "image-classification",
             model=model_name,
-            device=-1  # CPU
+            device=-1,  # CPU
+            local_files_only=True,  # 纯本地，不联网
         )
 
     def recognize(self, face_img: np.ndarray) -> dict[str, float]:
