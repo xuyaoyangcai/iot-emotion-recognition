@@ -470,7 +470,7 @@ elif input_type == "🎥 实时摄像头":
         last_caption = st.session_state.get("cam_last_caption", "")
         last_emotions = st.session_state.get("cam_last_emotions", [])
         frame_count = st.session_state.get("cam_frame", 0)
-        threshold = st.session_state.get("cam_threshold", confidence_threshold)
+        det_threshold = threshold
 
         # 每轮连续跑 1.5 秒，保证画面流畅
         batch_end = time.time() + 1.5
@@ -485,7 +485,7 @@ elif input_type == "🎥 实时摄像头":
 
             # 快速人脸检测 — 每帧都做（~10ms）
             faces = face_detector.detect_faces(rgb)
-            faces = [f for f in faces if f.confidence >= threshold]
+            faces = [f for f in faces if f.confidence >= det_threshold]
 
             do_analysis = (now - last_analysis >= analysis_sec)
 
