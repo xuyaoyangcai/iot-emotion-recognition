@@ -9,7 +9,10 @@ from io import StringIO
 from PIL import Image
 import time
 
-from face_detector import detect_faces, extract_face_roi, Face
+from face_detector import (
+    detect_faces, extract_face_roi, Face,
+    estimate_head_pose, classify_head_pose,
+)
 from expression_recognizer import ExpressionRecognizer, EMOTIONS
 from analyzer import ResultAnalyzer
 from utils import (
@@ -87,6 +90,8 @@ def process_frame(image):
     faces = detect_faces(image)
     emotions = []
     valid_faces = []
+    head_up = 0
+    head_down = 0
     for face in faces:
         if face.confidence < threshold:
             continue
@@ -97,9 +102,18 @@ def process_frame(image):
             probs = st.session_state.recognizer.recognize(roi)
             emotions.append(probs)
             valid_faces.append(face)
+            # 头部姿态估计
+            pitch, yaw, roll = estimate_head_pose(face, image.shape)
+            status = classify_head_pose(pitch)
+            if status == "低头":
+                head_down += 1
+            elif status == "抬头":
+                head_up += 1
+            else:
+                head_up += 1  # 正常算抬头
         except Exception:
             continue
-    return valid_faces, emotions
+    return valid_faces, emotions, head_up, head_down
 
 
 def save_records(faces, emotions, source):
@@ -123,12 +137,18 @@ def render_result(image, faces, emotions):
 
 def show_stats():
     s = analyzer.get_summary()
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("检测人次", s["total_people"])
     c2.metric("主导表情", s["main_expression"])
     c3.metric("表情种类", sum(1 for v in s["expression_count"].values() if v > 0))
     state = analyzer.get_latest_classroom_state()
     c4.metric("课堂状态", state)
+    # 最新帧抬头率
+    if analyzer.frame_records:
+        hr = analyzer.frame_records[-1].head_up_rate
+        c5.metric("抬头率", f"{hr*100:.0f}%")
+    else:
+        c5.metric("抬头率", "N/A")
 
     st.markdown("---")
     data = {e: s["expression_count"][e] for e in EMOTIONS if s["expression_count"][e] > 0}
@@ -171,6 +191,14 @@ def show_time_series_chart():
             name=emo, line=dict(color=colors.get(emo), width=2),
             marker=dict(size=4),
         ))
+
+    # 抬头率曲线（虚线）
+    hr_vals = [fr.head_up_rate * 100 for fr in fr_data]
+    fig.add_trace(go.Scatter(
+        x=x_vals, y=hr_vals, mode='lines',
+        name="抬头率", line=dict(color="#00BCD4", width=2, dash="dash"),
+        yaxis="y",
+    ))
 
     # 预警区域标记
     if window_results:
@@ -222,29 +250,27 @@ def show_time_series_chart():
 
 # ── 主界面 ──
 st.title("🏫 基于表情识别的课堂状态分析系统")
-st.caption("物联网综合大作业 — 多人人脸检测与表情识别的课堂状态分析")
+st.caption("多人人脸检测与表情识别的课堂状态分析")
 
 if input_type == "📷 上传图片":
     file = st.file_uploader("上传图片", type=["jpg", "jpeg", "png"])
     if file:
         image = cv2.cvtColor(np.array(Image.open(file).convert("RGB")), cv2.COLOR_RGB2BGR)
-        faces, emotions = process_frame(image)
+        faces, emotions, head_up, head_down = process_frame(image)
 
         # 帧级聚合
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        per_frame = aggregate_per_frame(emotions, 1, 0, ts, file.name)
+        per_frame = aggregate_per_frame(emotions, 1, 0, ts, file.name,
+                                        head_up, head_down)
         analyzer.add_frame_record(per_frame)
         tracker.feed(per_frame.classroom_state)
 
-        col_a, col_b = st.columns([2, 1])
-        with col_a:
-            result = render_result(image, faces, emotions)
-            st.image(cv2.cvtColor(result, cv2.COLOR_BGR2RGB),
-                     caption=f"检测到 {len(faces)} 张人脸 | 课堂状态: {per_frame.classroom_state}",
-                     use_container_width=True)
-        with col_b:
-            save_records(faces, emotions, file.name)
-            show_stats()
+        result = render_result(image, faces, emotions)
+        st.image(cv2.cvtColor(result, cv2.COLOR_BGR2RGB),
+                 caption=f"检测: {per_frame.total_faces}人 | 抬头率: {per_frame.head_up_rate*100:.0f}% | 课堂状态: {per_frame.classroom_state}",
+                 use_container_width=True)
+        save_records(faces, emotions, file.name)
+        show_stats()
     else:
         st.info("👆 请上传一张包含多人的课堂图片")
 
@@ -291,7 +317,7 @@ elif input_type == "🎬 上传视频":
 
             processed += 1
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces, emotions = process_frame(rgb)
+            faces, emotions, head_up, head_down = process_frame(rgb)
 
             elapsed = processed * (frame_interval / fps)
 
@@ -299,6 +325,7 @@ elif input_type == "🎬 上传视频":
                 emotions, processed, elapsed,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 file.name,
+                head_up, head_down,
             )
             analyzer.add_frame_record(per_frame)
             frame_data.append(per_frame)
@@ -313,10 +340,11 @@ elif input_type == "🎬 上传视频":
             slot_img.image(result, use_container_width=True)
             slot_status.markdown(
                 f"**帧 {processed}/{sampled}** | 检测: {per_frame.total_faces}人 | "
+                f"抬头率: {per_frame.head_up_rate*100:.0f}% | "
                 f"课堂状态: {per_frame.classroom_state} | "
                 f"预警: {level_emoji} {warning_level} "
-                f"(良好:{tracker_local.good_streak} 平稳:{tracker_local.stable_streak} "
-                f"低落:{tracker_local.low_streak} 波动:{tracker_local.volatile_streak})"
+                f"({tracker_local.good_streak}G/{tracker_local.stable_streak}S/"
+                f"{tracker_local.low_streak}L/{tracker_local.volatile_streak}V)"
             )
 
             # 实时更新时序图
@@ -344,6 +372,8 @@ elif input_type == "🎬 上传视频":
             volatile_pct = sum(1 for s in states if "波动" in s) / len(states) * 100
             stable_pct = sum(1 for s in states if "平稳" in s) / len(states) * 100
 
+            avg_head_up = sum(fr.head_up_rate for fr in analyzer.frame_records) / len(analyzer.frame_records) * 100
+            st.write(f"- 平均抬头率: **{avg_head_up:.1f}%**")
             st.write(f"- 状态良好占比: **{good_pct:.1f}%**")
             st.write(f"- 状态平稳占比: **{stable_pct:.1f}%**")
             st.write(f"- 需关注占比: **{low_pct:.1f}%**")
@@ -408,29 +438,27 @@ elif input_type == "🎥 实时摄像头":
             st.session_state.cam_frame = frame_count
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces, emotions = process_frame(rgb)
+            faces, emotions, head_up, head_down = process_frame(rgb)
 
             # 帧级聚合
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             per_frame = aggregate_per_frame(
                 emotions, frame_count, frame_count * 0.08,
                 ts, "camera",
+                head_up, head_down,
             )
             analyzer.add_frame_record(per_frame)
             tracker.feed(per_frame.classroom_state)
 
-            col_a, col_b = st.columns([2, 1])
-            with col_a:
-                result = render_result(rgb, faces, emotions)
-                level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
-                    tracker.current_level, "⚪")
-                st.image(result,
-                         caption=f"实时检测 | 人脸: {len(faces)} | 课堂状态: {per_frame.classroom_state} | 预警: {level_emoji}",
-                         use_container_width=True)
-            with col_b:
-                if faces:
-                    save_records(faces, emotions, "camera")
-                show_stats()
+            result = render_result(rgb, faces, emotions)
+            level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
+                tracker.current_level, "⚪")
+            st.image(result,
+                     caption=f"实时 | 人脸:{len(faces)} | 抬头率:{per_frame.head_up_rate*100:.0f}% | 课堂:{per_frame.classroom_state} | 预警:{level_emoji}",
+                     use_container_width=True)
+            if faces:
+                save_records(faces, emotions, "camera")
+            show_stats()
 
             # 时序图（积累足够帧后显示）
             if len(analyzer.frame_records) >= 3:

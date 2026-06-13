@@ -62,11 +62,41 @@ class TestAggregatePerFrame:
         assert result.ratios["Happy"] == 2 / 3
         assert "课堂状态" in result.classroom_state
 
+    def test_head_up_rate(self):
+        """有低头时抬头率降低"""
+        emotions = [
+            {"Happy": 0.8, "Neutral": 0.1, "Sad": 0.0, "Angry": 0.0,
+             "Surprise": 0.05, "Fear": 0.03, "Disgust": 0.02},
+        ]
+        result = aggregate_per_frame(emotions, 1, 0.0, "ts", "test.jpg",
+                                     head_up=1, head_down=3)
+        assert result.head_up_rate == 0.25
+        assert result.head_up_count == 1
+        assert result.head_down_count == 3
+
     def test_empty(self):
         result = aggregate_per_frame([], 1, 0.0, "2026-06-13 10:00:00", "test.jpg")
         assert result.total_faces == 0
         assert result.main_emotion == "N/A"
         assert result.classroom_state == "未检测到学生"
+
+
+class TestClassifyHeadPose:
+
+    def test_low_head_up_triggers_concern(self):
+        """抬头率 < 50% → 需关注，哪怕表情是好的"""
+        counts = {"Happy": 8, "Neutral": 2, "Sad": 0, "Angry": 0,
+                  "Surprise": 0, "Fear": 0, "Disgust": 0}
+        assert classify_classroom_state(counts, 10, head_up_rate=0.3) == \
+            "课堂状态较低落或需要关注"
+
+    def test_good_needs_head_up(self):
+        """表情好但抬头率不够 → 不判为良好"""
+        counts = {"Happy": 5, "Neutral": 3, "Sad": 1, "Angry": 1,
+                  "Surprise": 0, "Fear": 0, "Disgust": 0}
+        # Happy+Neutral=80% but head_up_rate=55%
+        assert classify_classroom_state(counts, 10, head_up_rate=0.55) != \
+            "课堂状态良好"
 
 
 class TestSlidingWindow:
