@@ -22,7 +22,7 @@ class ExpressionRecognizer:
             "image-classification",
             model=model_name,
             device=-1,  # CPU
-            local_files_only=True,  # 纯本地，不联网
+            model_kwargs={"local_files_only": True},
         )
 
     def recognize(self, face_img: np.ndarray) -> dict[str, float]:
