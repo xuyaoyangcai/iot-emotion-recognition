@@ -435,76 +435,120 @@ elif input_type == "🎬 上传视频":
 elif input_type == "🎥 实时摄像头":
     analysis_sec = st.slider("⏱ 分析间隔(秒)", 1, 5, 2)
 
-    # 分析结果队列（WebRTC 回调线程 → Streamlit 主线程）
     if "cam_result_queue" not in st.session_state:
         st.session_state.cam_result_queue = queue.Queue()
 
-    recognizer = st.session_state.recognizer
-    det_threshold = threshold
+    # 用 st.session_state 存分析参数，供回调线程读取
+    st.session_state.cam_analysis_sec = analysis_sec
+    st.session_state.cam_threshold = threshold
+    st.session_state.cam_recognizer = st.session_state.recognizer
 
     class CamProcessor(VideoProcessorBase):
         def __init__(self):
-            self.last_analysis = 0.0
-            self.last_emotions = []
-            self.last_caption = ""
+            self._lock = threading.Lock()
+            self._last_emotions = []
+            self._last_caption = ""
+            self._last_analysis_ts = 0.0
+            self._analysis_busy = False
+            self._stop_worker = False
+            self._worker = threading.Thread(target=self._analysis_worker, daemon=True)
+            self._worker.start()
+
+        def _analysis_worker(self):
+            """后台线程：定期对最新帧执行表情识别+头部姿态（不阻塞视频流）"""
+            while not self._stop_worker:
+                time.sleep(0.1)
+                now = time.time()
+                sec = st.session_state.get("cam_analysis_sec", 2)
+                if now - self._last_analysis_ts < sec:
+                    continue
+                if self._analysis_busy:
+                    continue
+
+                # 获取最新帧和检测到的人脸
+                with self._lock:
+                    snap = getattr(self, "_snap_img", None)
+                    snap_faces = getattr(self, "_snap_faces", None) or []
+                if snap is None or not snap_faces:
+                    continue
+
+                self._analysis_busy = True
+                self._last_analysis_ts = now
+
+                try:
+                    rec = st.session_state.get("cam_recognizer")
+                    if rec is None:
+                        continue
+                    emotions = []
+                    head_up, head_down = 0, 0
+                    for face in snap_faces:
+                        roi = face_detector.extract_face_roi(snap, face)
+                        if roi.size == 0:
+                            continue
+                        try:
+                            probs = rec.recognize(roi)
+                            emotions.append(probs)
+                            pitch, _, _ = face_detector.estimate_head_pose(face, snap.shape)
+                            far = face_detector.face_aspect_ratio(face)
+                            status = face_detector.classify_head_pose(pitch, face_ar=far)
+                            if status == "低头":
+                                head_down += 1
+                            else:
+                                head_up += 1
+                        except Exception:
+                            continue
+
+                    if emotions:
+                        with self._lock:
+                            self._last_emotions = emotions
+                        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        total = head_up + head_down
+                        hr = round(head_up / total, 3) if total > 0 else 1.0
+                        with self._lock:
+                            self._last_caption = (
+                                f"实时 | 人脸:{len(emotions)} | 抬头率:{hr*100:.0f}%"
+                            )
+                        # 推送结果
+                        q = st.session_state.get("cam_result_queue")
+                        if q:
+                            q.put({
+                                "emotions": emotions,
+                                "head_up": head_up,
+                                "head_down": head_down,
+                                "ts": ts,
+                                "faces": list(snap_faces),
+                            })
+                except Exception:
+                    pass
+                finally:
+                    self._analysis_busy = False
 
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
             h, w = img.shape[:2]
-            now = time.time()
+            thr = st.session_state.get("cam_threshold", 0.4)
 
-            # 快速人脸检测 — 每帧都做
+            # 快速人脸检测 — 每帧都做（<50ms）
             faces = face_detector.detect_faces(img)
-            faces = [f for f in faces if f.confidence >= det_threshold]
+            faces = [f for f in faces if f.confidence >= thr]
 
-            # 定期深度分析
-            if faces and now - self.last_analysis >= analysis_sec:
-                self.last_analysis = now
-                emotions = []
-                head_up, head_down = 0, 0
-                for face in faces:
-                    roi = face_detector.extract_face_roi(img, face)
-                    if roi.size == 0:
-                        continue
-                    try:
-                        probs = recognizer.recognize(roi)
-                        emotions.append(probs)
-                        pitch, _, _ = face_detector.estimate_head_pose(face, img.shape)
-                        far = face_detector.face_aspect_ratio(face)
-                        status = face_detector.classify_head_pose(pitch, face_ar=far)
-                        if status == "低头":
-                            head_down += 1
-                        else:
-                            head_up += 1
-                    except Exception:
-                        continue
+            # 保存快照供后台分析线程使用
+            with self._lock:
+                self._snap_img = img.copy()
+                self._snap_faces = list(faces)
+                emo_disp = list(self._last_emotions)
+                caption = self._last_caption
 
-                if emotions:
-                    self.last_emotions = emotions
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    total = head_up + head_down
-                    hr = round(head_up / total, 3) if total > 0 else 1.0
-                    self.last_caption = (f"实时 | 人脸:{len(emotions)} | "
-                                         f"抬头率:{hr*100:.0f}%")
-                    # 推送结果到主线程
-                    st.session_state.cam_result_queue.put({
-                        "emotions": emotions,
-                        "head_up": head_up,
-                        "head_down": head_down,
-                        "ts": ts,
-                        "faces": faces,
-                    })
-            # 画框 — 用上次分析结果的表情标签
-            if faces and self.last_emotions:
-                emo_disp = self.last_emotions[:len(faces)]
-                while len(emo_disp) < len(faces):
-                    emo_disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
-                        "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
-                img = draw_face_boxes(img, faces, emo_disp)
+            # 画框
+            if faces and emo_disp:
+                disp = emo_disp[:len(faces)]
+                while len(disp) < len(faces):
+                    disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
+                                "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
+                img = draw_face_boxes(img, faces, disp)
 
-            # 叠加抬头率/人脸数文字
-            if self.last_caption:
-                cv2.putText(img, self.last_caption, (10, h - 16),
+            if caption:
+                cv2.putText(img, caption, (10, h - 16),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -517,29 +561,30 @@ elif input_type == "🎥 实时摄像头":
         async_processing=True,
     )
 
-    # 处理积压的分析结果
-    result_queue = st.session_state.cam_result_queue
-    processed = 0
-    while not result_queue.empty() and processed < 10:
-        try:
-            r = result_queue.get_nowait()
-            per_frame = aggregate_per_frame(r["emotions"], analyzer.total_frames + 1,
-                                            time.time(), r["ts"], "camera")
-            _hp = r["head_up"] + r["head_down"]
-            per_frame.head_up_count = r["head_up"]
-            per_frame.head_down_count = r["head_down"]
-            per_frame.head_up_rate = round(r["head_up"] / _hp, 3) if _hp > 0 else 1.0
-            per_frame.classroom_state = _classify(per_frame)
-            analyzer.add_frame_record(per_frame)
-            tracker.feed(per_frame.classroom_state)
-            save_records(r["faces"], r["emotions"], "camera")
-            processed += 1
-        except queue.Empty:
-            break
+    # 统计面板放在 fragment 中，每2秒自动刷新，不影响视频流
+    @st.experimental_fragment(run_every=2)
+    def _cam_stats_panel():
+        result_queue = st.session_state.cam_result_queue
+        processed = 0
+        while not result_queue.empty() and processed < 10:
+            try:
+                r = result_queue.get_nowait()
+                per_frame = aggregate_per_frame(r["emotions"], analyzer.total_frames + 1,
+                                                time.time(), r["ts"], "camera")
+                _hp = r["head_up"] + r["head_down"]
+                per_frame.head_up_count = r["head_up"]
+                per_frame.head_down_count = r["head_down"]
+                per_frame.head_up_rate = round(r["head_up"] / _hp, 3) if _hp > 0 else 1.0
+                per_frame.classroom_state = _classify(per_frame)
+                analyzer.add_frame_record(per_frame)
+                tracker.feed(per_frame.classroom_state)
+                save_records(r["faces"], r["emotions"], "camera")
+                processed += 1
+            except queue.Empty:
+                break
+        if processed > 0 or analyzer.frame_records:
+            show_stats()
+            if len(analyzer.frame_records) >= 3:
+                show_time_series_chart()
 
-    if processed > 0:
-        show_stats()
-        if len(analyzer.frame_records) >= 3:
-            show_time_series_chart()
-        time.sleep(0.3)
-        st.rerun()
+    _cam_stats_panel()
