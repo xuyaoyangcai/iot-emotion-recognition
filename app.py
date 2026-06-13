@@ -7,6 +7,10 @@ for _m in ['classroom_state', 'face_detector', 'analyzer', 'utils', 'expression_
         os.remove(_p)
 
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+import av
+import queue
+import threading
 import cv2
 import numpy as np
 import pandas as pd
@@ -429,122 +433,113 @@ elif input_type == "🎬 上传视频":
         st.info("👆 请上传一段课堂视频（≥1分钟），系统将进行时序分析")
 
 elif input_type == "🎥 实时摄像头":
-    # 扫描可用摄像头（仅首次）
-    if st.session_state.cam_list is None:
-        cam_list = []
-        for i in range(5):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                backend = cap.getBackendName()
-                if ret:
-                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    cam_list.append((i, f"📷 摄像头 {i} — {w}x{h} ({backend})"))
-                else:
-                    cam_list.append((i, f"📷 摄像头 {i} ({backend}，无画面)"))
-                cap.release()
-        if not cam_list:
-            cam_list = [(0, "📷 摄像头 0 (未检测到)")]
-        st.session_state.cam_list = cam_list
+    analysis_sec = st.slider("⏱ 分析间隔(秒)", 1, 5, 2)
 
-    cam_idx_map = {label: idx for idx, label in st.session_state.cam_list}
-    cam_choice = st.selectbox("选择摄像头", list(cam_idx_map.keys()),
-                              help="DroidCam虚拟摄像头通常显示为摄像头1或2")
-    cam_index = cam_idx_map[cam_choice]
+    # 分析结果队列（WebRTC 回调线程 → Streamlit 主线程）
+    if "cam_result_queue" not in st.session_state:
+        st.session_state.cam_result_queue = queue.Queue()
 
-    analysis_sec = st.slider("⏱ 分析间隔(秒)", 1, 5, 2,
-                             help="每隔多少秒采样一帧做表情分析")
+    recognizer = st.session_state.recognizer
+    det_threshold = threshold
 
-    running = st.session_state.cam is not None
-    if st.button("⏹ 关闭摄像头" if running else "▶ 开启实时摄像头"):
-        if running:
-            st.session_state.cam.release()
-            st.session_state.cam = None
-        else:
-            st.session_state.cam = cv2.VideoCapture(cam_index)
-            st.session_state.cam_frame = 0
-            st.session_state.last_analysis = 0.0
-        st.rerun()
+    class CamProcessor(VideoProcessorBase):
+        def __init__(self):
+            self.last_analysis = 0.0
+            self.last_emotions = []
+            self.last_caption = ""
 
-    if st.session_state.cam is not None:
-        cam = st.session_state.cam
-        placeholder = st.empty()
-        caption_placeholder = st.empty()
-        last_analysis = st.session_state.get("last_analysis", 0.0)
-        last_caption = st.session_state.get("cam_last_caption", "")
-        last_emotions = st.session_state.get("cam_last_emotions", [])
-        frame_count = st.session_state.get("cam_frame", 0)
-        det_threshold = threshold
-        analysis_frame = st.session_state.get("cam_analysis_frame", None)
-
-        # 步骤1 — 显示循环：只做人脸检测+画框(快)，不阻塞
-        loop_end = time.time() + 0.5
-        while time.time() < loop_end:
-            ret, frame = cam.read()
-            if not ret:
-                break
-            frame_count += 1
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+            h, w = img.shape[:2]
             now = time.time()
 
-            # 快速人脸检测
-            faces = face_detector.detect_faces(rgb)
+            # 快速人脸检测 — 每帧都做
+            faces = face_detector.detect_faces(img)
             faces = [f for f in faces if f.confidence >= det_threshold]
 
-            # 画框
-            if faces and last_emotions:
-                emo_disp = last_emotions[:len(faces)]
+            # 定期深度分析
+            if faces and now - self.last_analysis >= analysis_sec:
+                self.last_analysis = now
+                emotions = []
+                head_up, head_down = 0, 0
+                for face in faces:
+                    roi = face_detector.extract_face_roi(img, face)
+                    if roi.size == 0:
+                        continue
+                    try:
+                        probs = recognizer.recognize(roi)
+                        emotions.append(probs)
+                        pitch, _, _ = face_detector.estimate_head_pose(face, img.shape)
+                        far = face_detector.face_aspect_ratio(face)
+                        status = face_detector.classify_head_pose(pitch, face_ar=far)
+                        if status == "低头":
+                            head_down += 1
+                        else:
+                            head_up += 1
+                    except Exception:
+                        continue
+
+                if emotions:
+                    self.last_emotions = emotions
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    total = head_up + head_down
+                    hr = round(head_up / total, 3) if total > 0 else 1.0
+                    self.last_caption = (f"实时 | 人脸:{len(emotions)} | "
+                                         f"抬头率:{hr*100:.0f}%")
+                    # 推送结果到主线程
+                    st.session_state.cam_result_queue.put({
+                        "emotions": emotions,
+                        "head_up": head_up,
+                        "head_down": head_down,
+                        "ts": ts,
+                        "faces": faces,
+                    })
+            # 画框 — 用上次分析结果的表情标签
+            if faces and self.last_emotions:
+                emo_disp = self.last_emotions[:len(faces)]
                 while len(emo_disp) < len(faces):
                     emo_disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
                         "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
-                display = draw_face_boxes(rgb, faces, emo_disp)
-            else:
-                display = rgb
-            placeholder.image(display, channels="RGB", use_container_width=True)
-            if last_caption:
-                caption_placeholder.caption(last_caption)
+                img = draw_face_boxes(img, faces, emo_disp)
 
-            # 记录需要分析的那一帧（取最新有脸的一帧）
-            if faces and now - last_analysis >= analysis_sec:
-                analysis_frame = rgb.copy()
-            time.sleep(0.03)
+            # 叠加抬头率/人脸数文字
+            if self.last_caption:
+                cv2.putText(img, self.last_caption, (10, h - 16),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        # 步骤2 — 分析（在显示循环之后，不会阻塞画面）
-        did_analysis = False
-        if analysis_frame is not None:
-            faces, emotions, head_up, head_down = process_frame(analysis_frame)
-            last_analysis = time.time()
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-            if emotions:
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                per_frame = aggregate_per_frame(emotions, frame_count, last_analysis, ts, "camera")
-                _hp = head_up + head_down
-                per_frame.head_up_count = head_up
-                per_frame.head_down_count = head_down
-                per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-                per_frame.classroom_state = _classify(per_frame)
-                analyzer.add_frame_record(per_frame)
-                tracker.feed(per_frame.classroom_state)
+    webrtc_streamer(
+        key="cam-webrtc",
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=CamProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
 
-                level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
-                    tracker.current_level, "⚪")
-                last_caption = (f"实时 | 人脸:{len(faces)} | "
-                              f"抬头率:{per_frame.head_up_rate*100:.0f}% | "
-                              f"课堂:{per_frame.classroom_state} | 预警:{level_emoji}")
-                last_emotions = emotions
-                save_records(faces, emotions, "camera")
-            analysis_frame = None
-            did_analysis = True
+    # 处理积压的分析结果
+    result_queue = st.session_state.cam_result_queue
+    processed = 0
+    while not result_queue.empty() and processed < 10:
+        try:
+            r = result_queue.get_nowait()
+            per_frame = aggregate_per_frame(r["emotions"], analyzer.total_frames + 1,
+                                            time.time(), r["ts"], "camera")
+            _hp = r["head_up"] + r["head_down"]
+            per_frame.head_up_count = r["head_up"]
+            per_frame.head_down_count = r["head_down"]
+            per_frame.head_up_rate = round(r["head_up"] / _hp, 3) if _hp > 0 else 1.0
+            per_frame.classroom_state = _classify(per_frame)
+            analyzer.add_frame_record(per_frame)
+            tracker.feed(per_frame.classroom_state)
+            save_records(r["faces"], r["emotions"], "camera")
+            processed += 1
+        except queue.Empty:
+            break
 
-        st.session_state.cam_frame = frame_count
-        st.session_state.last_analysis = last_analysis
-        st.session_state.cam_last_caption = last_caption
-        st.session_state.cam_last_emotions = last_emotions
-        st.session_state.cam_analysis_frame = analysis_frame
-
-        if did_analysis:
-            show_stats()
-            if len(analyzer.frame_records) >= 3:
-                show_time_series_chart()
+    if processed > 0:
+        show_stats()
+        if len(analyzer.frame_records) >= 3:
+            show_time_series_chart()
+        time.sleep(0.3)
         st.rerun()
