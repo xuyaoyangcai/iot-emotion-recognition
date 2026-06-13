@@ -530,10 +530,12 @@ elif input_type == "🎥 实时摄像头":
                                   f"抬头率:{per_frame.head_up_rate*100:.0f}% | "
                                   f"课堂:{per_frame.classroom_state} | 预警:{level_emoji}")
                     last_emotions = emotions
+                    emotions_for_display = emotions
                     save_records(valid_faces, emotions, "camera")
                     faces_for_display = valid_faces
                 else:
                     faces_for_display = faces
+                    emotions_for_display = []
                 did_analysis = True
             else:
                 # 不分析时用上次的表情绘制框
