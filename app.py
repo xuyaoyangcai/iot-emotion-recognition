@@ -447,6 +447,9 @@ elif input_type == "🎥 实时摄像头":
                               help="DroidCam虚拟摄像头通常显示为摄像头1或2")
     cam_index = cam_idx_map[cam_choice]
 
+    analysis_sec = st.slider("⏱ 分析间隔(秒)", 1, 5, 2,
+                             help="每隔多少秒采样一帧做表情分析")
+
     running = st.session_state.cam is not None
     if st.button("⏹ 关闭摄像头" if running else "▶ 开启实时摄像头"):
         if running:
@@ -454,53 +457,70 @@ elif input_type == "🎥 实时摄像头":
             st.session_state.cam = None
         else:
             st.session_state.cam = cv2.VideoCapture(cam_index)
-            # 重置帧计数
             st.session_state.cam_frame = 0
+            st.session_state.last_analysis = 0.0
         st.rerun()
 
     if st.session_state.cam is not None:
         cam = st.session_state.cam
-        ret, frame = cam.read()
-        if ret:
-            frame_count = st.session_state.get("cam_frame", 0) + 1
-            st.session_state.cam_frame = frame_count
+        placeholder = st.empty()
+        caption_placeholder = st.empty()
+        last_analysis = st.session_state.get("last_analysis", 0.0)
+        last_result = st.session_state.get("cam_last_result", None)
+        last_caption = st.session_state.get("cam_last_caption", "")
+        frame_count = st.session_state.get("cam_frame", 0)
 
+        # 连续读取多帧保证画面流畅，但只隔 analysis_sec 秒分析一次
+        batch_end = time.time() + 1.0  # 每轮跑1秒
+        did_analysis = False
+        while time.time() < batch_end:
+            ret, frame = cam.read()
+            if not ret:
+                break
+            frame_count += 1
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces, emotions, head_up, head_down = process_frame(rgb)
+            now = time.time()
 
-            # 帧级聚合
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            per_frame = aggregate_per_frame(
-                emotions, frame_count, frame_count * 0.08,
-                ts, "camera",
-            )
-            _hp = head_up + head_down
-            per_frame.head_up_count = head_up
-            per_frame.head_down_count = head_down
-            per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-            per_frame.classroom_state = _classify(per_frame)
-            analyzer.add_frame_record(per_frame)
-            tracker.feed(per_frame.classroom_state)
+            if now - last_analysis >= analysis_sec:
+                last_analysis = now
+                faces, emotions, head_up, head_down = process_frame(rgb)
 
-            result = render_result(rgb, faces, emotions)
-            level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
-                tracker.current_level, "⚪")
-            st.image(result,
-                     caption=f"实时 | 人脸:{len(faces)} | 抬头率:{per_frame.head_up_rate*100:.0f}% | 课堂:{per_frame.classroom_state} | 预警:{level_emoji}",
-                     use_container_width=True)
-            if faces:
-                save_records(faces, emotions, "camera")
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                per_frame = aggregate_per_frame(emotions, frame_count, now, ts, "camera")
+                _hp = head_up + head_down
+                per_frame.head_up_count = head_up
+                per_frame.head_down_count = head_down
+                per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
+                per_frame.classroom_state = _classify(per_frame)
+                analyzer.add_frame_record(per_frame)
+                tracker.feed(per_frame.classroom_state)
+
+                level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
+                    tracker.current_level, "⚪")
+                last_caption = (f"实时 | 人脸:{len(faces)} | "
+                              f"抬头率:{per_frame.head_up_rate*100:.0f}% | "
+                              f"课堂:{per_frame.classroom_state} | 预警:{level_emoji}")
+                if faces:
+                    save_records(faces, emotions, "camera")
+                    last_result = render_result(rgb, faces, emotions)
+                else:
+                    last_result = rgb
+                did_analysis = True
+
+            # 始终显示实时画面，caption 显示最近一次分析结果
+            placeholder.image(rgb, channels="RGB", use_container_width=True)
+            if last_caption:
+                caption_placeholder.caption(last_caption)
+            time.sleep(0.03)  # ~30fps
+
+        st.session_state.cam_frame = frame_count
+        st.session_state.last_analysis = last_analysis
+        st.session_state.cam_last_result = last_result
+        st.session_state.cam_last_caption = last_caption
+
+        # 更新图表
+        if did_analysis:
             show_stats()
-
-            # 时序图（积累足够帧后显示）
             if len(analyzer.frame_records) >= 3:
                 show_time_series_chart()
-
-            time.sleep(0.08)
-            st.rerun()
-        else:
-            st.error("无法读取摄像头，请检查权限")
-            st.session_state.cam.release()
-            st.session_state.cam = None
-    else:
-        st.info("👆 点击「开启实时摄像头」开始实时课堂状态检测")
+        st.rerun()
