@@ -467,12 +467,13 @@ elif input_type == "🎥 实时摄像头":
         placeholder = st.empty()
         caption_placeholder = st.empty()
         last_analysis = st.session_state.get("last_analysis", 0.0)
-        last_result = st.session_state.get("cam_last_result", None)
         last_caption = st.session_state.get("cam_last_caption", "")
+        last_emotions = st.session_state.get("cam_last_emotions", [])
         frame_count = st.session_state.get("cam_frame", 0)
+        threshold = st.session_state.get("cam_threshold", confidence_threshold)
 
-        # 连续读取多帧保证画面流畅，但只隔 analysis_sec 秒分析一次
-        batch_end = time.time() + 1.0  # 每轮跑1秒
+        # 每轮连续跑 1.5 秒，保证画面流畅
+        batch_end = time.time() + 1.5
         did_analysis = False
         while time.time() < batch_end:
             ret, frame = cam.read()
@@ -482,44 +483,85 @@ elif input_type == "🎥 实时摄像头":
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             now = time.time()
 
-            if now - last_analysis >= analysis_sec:
+            # 快速人脸检测 — 每帧都做（~10ms）
+            faces = face_detector.detect_faces(rgb)
+            faces = [f for f in faces if f.confidence >= threshold]
+
+            do_analysis = (now - last_analysis >= analysis_sec)
+
+            if do_analysis and faces:
                 last_analysis = now
-                faces, emotions, head_up, head_down = process_frame(rgb)
+                # 慢速分析：表情识别 + 头部姿态（~500ms）
+                emotions = []
+                valid_faces = []
+                head_up, head_down = 0, 0
+                for face in faces:
+                    roi = face_detector.extract_face_roi(rgb, face)
+                    if roi.size == 0:
+                        continue
+                    try:
+                        probs = st.session_state.recognizer.recognize(roi)
+                        emotions.append(probs)
+                        valid_faces.append(face)
+                        pitch, yaw, roll = face_detector.estimate_head_pose(face, rgb.shape)
+                        far = face_detector.face_aspect_ratio(face)
+                        status = face_detector.classify_head_pose(pitch, face_ar=far)
+                        if status == "低头":
+                            head_down += 1
+                        else:
+                            head_up += 1
+                    except Exception:
+                        continue
 
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                per_frame = aggregate_per_frame(emotions, frame_count, now, ts, "camera")
-                _hp = head_up + head_down
-                per_frame.head_up_count = head_up
-                per_frame.head_down_count = head_down
-                per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-                per_frame.classroom_state = _classify(per_frame)
-                analyzer.add_frame_record(per_frame)
-                tracker.feed(per_frame.classroom_state)
+                if emotions:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    per_frame = aggregate_per_frame(emotions, frame_count, now, ts, "camera")
+                    _hp = head_up + head_down
+                    per_frame.head_up_count = head_up
+                    per_frame.head_down_count = head_down
+                    per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
+                    per_frame.classroom_state = _classify(per_frame)
+                    analyzer.add_frame_record(per_frame)
+                    tracker.feed(per_frame.classroom_state)
 
-                level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
-                    tracker.current_level, "⚪")
-                last_caption = (f"实时 | 人脸:{len(faces)} | "
-                              f"抬头率:{per_frame.head_up_rate*100:.0f}% | "
-                              f"课堂:{per_frame.classroom_state} | 预警:{level_emoji}")
-                if faces:
-                    save_records(faces, emotions, "camera")
-                    last_result = render_result(rgb, faces, emotions)
+                    level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(
+                        tracker.current_level, "⚪")
+                    last_caption = (f"实时 | 人脸:{len(valid_faces)} | "
+                                  f"抬头率:{per_frame.head_up_rate*100:.0f}% | "
+                                  f"课堂:{per_frame.classroom_state} | 预警:{level_emoji}")
+                    last_emotions = emotions
+                    save_records(valid_faces, emotions, "camera")
+                    faces_for_display = valid_faces
                 else:
-                    last_result = rgb
+                    faces_for_display = faces
                 did_analysis = True
+            else:
+                # 不分析时用上次的表情绘制框
+                faces_for_display = faces
+                if last_emotions:
+                    emotions_for_display = last_emotions[:len(faces)]
+                    # 补齐
+                    while len(emotions_for_display) < len(faces):
+                        emotions_for_display.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
+                            "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
+                else:
+                    emotions_for_display = []
 
-            # 始终显示实时画面，caption 显示最近一次分析结果
-            placeholder.image(rgb, channels="RGB", use_container_width=True)
+            # 画框并显示
+            if faces_for_display and emotions_for_display and len(faces_for_display) == len(emotions_for_display):
+                display = draw_face_boxes(rgb, faces_for_display, emotions_for_display)
+            else:
+                display = rgb
+            placeholder.image(display, channels="RGB", use_container_width=True)
             if last_caption:
                 caption_placeholder.caption(last_caption)
-            time.sleep(0.03)  # ~30fps
+            time.sleep(0.03)
 
         st.session_state.cam_frame = frame_count
         st.session_state.last_analysis = last_analysis
-        st.session_state.cam_last_result = last_result
         st.session_state.cam_last_caption = last_caption
+        st.session_state.cam_last_emotions = last_emotions
 
-        # 更新图表
         if did_analysis:
             show_stats()
             if len(analyzer.frame_records) >= 3:
