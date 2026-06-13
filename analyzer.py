@@ -40,11 +40,17 @@ class ResultAnalyzer:
             "main_expression": main,
         }
 
-    def export_csv(self, filepath: str):
+    def export_csv(self, filepath_or_buffer):
         fieldnames = ["Timestamp", "Image", "Person_ID",
                       "Happy", "Neutral", "Sad", "Angry",
                       "Surprise", "Fear", "Disgust", "Dominant"]
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
+        if isinstance(filepath_or_buffer, str):
+            f = open(filepath_or_buffer, "w", newline="", encoding="utf-8")
+            _close = True
+        else:
+            f = filepath_or_buffer
+            _close = False
+        try:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             # 按时间分组聚合
@@ -64,6 +70,9 @@ class ResultAnalyzer:
                 dominant = max(data["counts"], key=data["counts"].get)
                 row["Dominant"] = dominant if data["counts"][dominant] > 0 else "N/A"
                 writer.writerow(row)
+        finally:
+            if _close:
+                f.close()
 
     def clear(self):
         self.records.clear()
