@@ -1,7 +1,8 @@
 import sys, os
 sys.dont_write_bytecode = True
+_base = os.path.dirname(os.path.abspath(__file__))
 for _m in ['classroom_state', 'face_detector', 'analyzer', 'utils', 'expression_recognizer']:
-    _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), '__pycache__', f'{_m}.cpython-311.pyc')
+    _p = os.path.join(_base, '__pycache__', f'{_m}.cpython-311.pyc')
     if os.path.exists(_p):
         os.remove(_p)
 
@@ -89,6 +90,20 @@ with st.sidebar:
         st.download_button("📈 导出时序分析CSV", ts_buf.getvalue(),
                            f"timeline_{datetime.now():%Y%m%d_%H%M%S}.csv",
                            mime="text/csv")
+
+# ── 辅助函数 ──
+def _classify(per_frame):
+    """调用 classify_classroom_state，兼容新旧签名"""
+    import inspect
+    try:
+        sig = inspect.signature(classify_classroom_state)
+        if len(sig.parameters) >= 3:
+            return classify_classroom_state(per_frame.counts, per_frame.total_faces, per_frame.head_up_rate)
+        else:
+            return classify_classroom_state(per_frame.counts, per_frame.total_faces)
+    except Exception:
+        return classify_classroom_state(per_frame.counts, per_frame.total_faces)
+
 
 # ── 处理函数 ──
 def process_frame(image):
@@ -270,7 +285,7 @@ if input_type == "📷 上传图片":
         per_frame.head_up_count = head_up
         per_frame.head_down_count = head_down
         per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-        per_frame.classroom_state = classify_classroom_state(per_frame.counts, per_frame.total_faces, per_frame.head_up_rate)
+        per_frame.classroom_state = _classify(per_frame)
         analyzer.add_frame_record(per_frame)
         tracker.feed(per_frame.classroom_state)
 
@@ -339,7 +354,7 @@ elif input_type == "🎬 上传视频":
             per_frame.head_up_count = head_up
             per_frame.head_down_count = head_down
             per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-            per_frame.classroom_state = classify_classroom_state(per_frame.counts, per_frame.total_faces, per_frame.head_up_rate)
+            per_frame.classroom_state = _classify(per_frame)
             analyzer.add_frame_record(per_frame)
             frame_data.append(per_frame)
             save_records(faces, emotions, file.name)
@@ -463,7 +478,7 @@ elif input_type == "🎥 实时摄像头":
             per_frame.head_up_count = head_up
             per_frame.head_down_count = head_down
             per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-            per_frame.classroom_state = classify_classroom_state(per_frame.counts, per_frame.total_faces, per_frame.head_up_rate)
+            per_frame.classroom_state = _classify(per_frame)
             analyzer.add_frame_record(per_frame)
             tracker.feed(per_frame.classroom_state)
 
