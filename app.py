@@ -438,10 +438,11 @@ elif input_type == "🎥 实时摄像头":
     if "cam_result_queue" not in st.session_state:
         st.session_state.cam_result_queue = queue.Queue()
 
-    # 用 st.session_state 存分析参数，供回调线程读取
-    st.session_state.cam_analysis_sec = analysis_sec
-    st.session_state.cam_threshold = threshold
-    st.session_state.cam_recognizer = st.session_state.recognizer
+    # 捕获参数到闭包（避免 WebRTC 回调线程访问 st.session_state 不稳定）
+    _cam_recognizer = st.session_state.recognizer
+    _cam_threshold = threshold
+    _cam_analysis_sec = analysis_sec
+    _cam_result_queue = st.session_state.cam_result_queue
 
     class CamProcessor(VideoProcessorBase):
         def __init__(self):
@@ -451,6 +452,9 @@ elif input_type == "🎥 实时摄像头":
             self._last_analysis_ts = 0.0
             self._analysis_busy = False
             self._stop_worker = False
+            self._recv_count = 0
+            self._face_count = 0
+            self._analysis_count = 0
             self._worker = threading.Thread(target=self._analysis_worker, daemon=True)
             self._worker.start()
 
@@ -459,13 +463,11 @@ elif input_type == "🎥 实时摄像头":
             while not self._stop_worker:
                 time.sleep(0.1)
                 now = time.time()
-                sec = st.session_state.get("cam_analysis_sec", 2)
-                if now - self._last_analysis_ts < sec:
+                if now - self._last_analysis_ts < _cam_analysis_sec:
                     continue
                 if self._analysis_busy:
                     continue
 
-                # 获取最新帧和检测到的人脸
                 with self._lock:
                     snap = getattr(self, "_snap_img", None)
                     snap_faces = getattr(self, "_snap_faces", None) or []
@@ -476,9 +478,6 @@ elif input_type == "🎥 实时摄像头":
                 self._last_analysis_ts = now
 
                 try:
-                    rec = st.session_state.get("cam_recognizer")
-                    if rec is None:
-                        continue
                     emotions = []
                     head_up, head_down = 0, 0
                     for face in snap_faces:
@@ -486,7 +485,7 @@ elif input_type == "🎥 实时摄像头":
                         if roi.size == 0:
                             continue
                         try:
-                            probs = rec.recognize(roi)
+                            probs = _cam_recognizer.recognize(roi)
                             emotions.append(probs)
                             pitch, _, _ = face_detector.estimate_head_pose(face, snap.shape)
                             far = face_detector.face_aspect_ratio(face)
@@ -501,57 +500,63 @@ elif input_type == "🎥 实时摄像头":
                     if emotions:
                         with self._lock:
                             self._last_emotions = emotions
-                        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        total = head_up + head_down
-                        hr = round(head_up / total, 3) if total > 0 else 1.0
-                        with self._lock:
+                            self._analysis_count += 1
+                            hr = round(head_up / (head_up + head_down), 3) \
+                                if (head_up + head_down) > 0 else 1.0
                             self._last_caption = (
                                 f"实时 | 人脸:{len(emotions)} | 抬头率:{hr*100:.0f}%"
+                                f" | 分析#{self._analysis_count}"
                             )
-                        # 推送结果
-                        q = st.session_state.get("cam_result_queue")
-                        if q:
-                            q.put({
-                                "emotions": emotions,
-                                "head_up": head_up,
-                                "head_down": head_down,
-                                "ts": ts,
-                                "faces": list(snap_faces),
-                            })
+                        _cam_result_queue.put({
+                            "emotions": emotions,
+                            "head_up": head_up,
+                            "head_down": head_down,
+                            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "faces": list(snap_faces),
+                        })
                 except Exception:
                     pass
                 finally:
                     self._analysis_busy = False
 
         def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            h, w = img.shape[:2]
-            thr = st.session_state.get("cam_threshold", 0.4)
+            try:
+                img = frame.to_ndarray(format="bgr24")
+                h, w = img.shape[:2]
 
-            # 快速人脸检测 — 每帧都做（<50ms）
-            faces = face_detector.detect_faces(img)
-            faces = [f for f in faces if f.confidence >= thr]
+                faces = face_detector.detect_faces(img)
+                faces = [f for f in faces if f.confidence >= _cam_threshold]
 
-            # 保存快照供后台分析线程使用
-            with self._lock:
-                self._snap_img = img.copy()
-                self._snap_faces = list(faces)
-                emo_disp = list(self._last_emotions)
-                caption = self._last_caption
+                with self._lock:
+                    self._recv_count += 1
+                    self._face_count = len(faces)
+                    self._snap_img = img.copy()
+                    self._snap_faces = list(faces)
+                    emo_disp = list(self._last_emotions)
+                    caption = self._last_caption
 
-            # 画框
-            if faces and emo_disp:
-                disp = emo_disp[:len(faces)]
-                while len(disp) < len(faces):
-                    disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
-                                "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
-                img = draw_face_boxes(img, faces, disp)
+                # 始终画框（即使还没分析结果，也显示检测框）
+                if faces:
+                    if emo_disp:
+                        disp = emo_disp[:len(faces)]
+                    else:
+                        disp = []
+                    while len(disp) < len(faces):
+                        disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
+                                    "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
+                    img = draw_face_boxes(img, faces, disp)
 
-            if caption:
-                cv2.putText(img, caption, (10, h - 16),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                # 左下角显示调试信息
+                dbg = f"F#{self._recv_count} | 人脸:{len(faces)} | 分析#{self._analysis_count}"
+                cv2.putText(img, dbg, (10, h - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
+                if caption:
+                    cv2.putText(img, caption, (10, 24),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
+            except Exception:
+                return frame
 
     webrtc_streamer(
         key="cam-webrtc",
