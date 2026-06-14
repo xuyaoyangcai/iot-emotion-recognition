@@ -102,51 +102,14 @@ if "warning_tracker" not in st.session_state:
 analyzer = st.session_state.analyzer
 tracker = st.session_state.warning_tracker
 
-# ── 侧边栏 ──
+# ── 侧边栏（仅模式选择）──
 with st.sidebar:
     st.title("🏫 课堂状态分析")
-
-    with st.expander("⚙️ 模式设置", expanded=True):
-        mode = st.radio("显示模式", ["📊 仪表盘模式", "🪞 魔镜模式"], label_visibility="collapsed")
-        input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 实时摄像头"], label_visibility="collapsed")
-        threshold = st.slider("检测阈值", 0.3, 0.9, 0.4, 0.05)
-
-    # 课堂状态实时显示
-    state = analyzer.get_latest_classroom_state()
-    warning_level = tracker.current_level
-    if state != "N/A" or warning_level != "Normal":
-        st.markdown("---")
-        if state != "N/A":
-            color = CLASSROOM_STATE_COLORS.get(state, "#888")
-            st.markdown(f"**课堂状态:** :{'green' if '良好' in state else 'orange' if '平稳' in state else 'red' if '低落' in state or '波动' in state else 'gray'}[{state}]")
-        if warning_level != "Normal":
-            level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(warning_level, "⚪")
-            st.markdown(f"**预警: {level_emoji} {warning_level}**")
-
+    mode = st.radio("显示模式", ["📊 仪表盘模式", "🪞 魔镜模式"], label_visibility="collapsed")
     st.markdown("---")
-    if st.button("🔄 重置统计", use_container_width=True):
-        analyzer.clear()
-        st.session_state.warning_tracker = WarningTracker()
-        st.rerun()
-
-    # CSV 导出
-    with st.expander("📥 导出数据", expanded=False):
-        if analyzer.records:
-            buf = StringIO()
-            analyzer.export_csv(buf)
-            st.download_button("📊 课堂状态CSV", buf.getvalue(),
-                               f"classroom_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                               mime="text/csv", use_container_width=True)
-        if analyzer.frame_records:
-            ts_buf = StringIO()
-            window_results = compute_sliding_window(analyzer.frame_records) \
-                if len(analyzer.frame_records) >= 5 else None
-            analyzer.export_time_series_csv(ts_buf, window_results)
-            st.download_button("📈 时序分析CSV", ts_buf.getvalue(),
-                               f"timeline_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                               mime="text/csv", use_container_width=True)
-        if not analyzer.records and not analyzer.frame_records:
-            st.caption("暂无数据可导出")
+    input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 实时摄像头"], label_visibility="collapsed")
+    st.markdown("---")
+    threshold = st.slider("检测阈值", 0.3, 0.9, 0.4, 0.05)
 
 def _classify(per_frame):
     """课堂状态分类，传入抬头率"""
@@ -242,6 +205,47 @@ def render_result(image, faces, emotions, composite_emotions=None):
         return img
 
 
+def show_status_bar():
+    """课堂状态 + 预警 + 重置 + 导出（在主区域顶部）"""
+    state = analyzer.get_latest_classroom_state()
+    warning_level = tracker.current_level
+
+    sc1, sc2, sc3, sc4, sc5 = st.columns([2, 1.5, 1, 1, 1])
+    with sc1:
+        if state != "N/A":
+            color = CLASSROOM_STATE_COLORS.get(state, "#888")
+            st.markdown(f"**课堂状态:** :{'green' if '良好' in state else 'orange' if '平稳' in state else 'red' if '低落' in state or '波动' in state else 'gray'}[{state}]")
+        else:
+            st.caption("课堂状态: 等待数据")
+    with sc2:
+        if warning_level != "Normal":
+            level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(warning_level, "⚪")
+            st.markdown(f"**预警: {level_emoji} {warning_level}**")
+        else:
+            st.caption("预警: 正常")
+    with sc3:
+        if st.button("🔄 重置", use_container_width=True, key="reset_btn_main"):
+            analyzer.clear()
+            st.session_state.warning_tracker = WarningTracker()
+            st.rerun()
+    with sc4:
+        if analyzer.records:
+            buf = StringIO()
+            analyzer.export_csv(buf)
+            st.download_button("📊 课堂CSV", buf.getvalue(),
+                               f"classroom_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                               mime="text/csv", use_container_width=True, key="csv_btn_main")
+    with sc5:
+        if analyzer.frame_records:
+            ts_buf = StringIO()
+            window_results = compute_sliding_window(analyzer.frame_records) \
+                if len(analyzer.frame_records) >= 5 else None
+            analyzer.export_time_series_csv(ts_buf, window_results)
+            st.download_button("📈 时序CSV", ts_buf.getvalue(),
+                               f"timeline_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                               mime="text/csv", use_container_width=True, key="ts_csv_btn_main")
+
+
 def show_stats():
     s = analyzer.get_summary()
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -250,7 +254,6 @@ def show_stats():
     c3.metric("表情种类", sum(1 for v in s["expression_count"].values() if v > 0))
     state = analyzer.get_latest_classroom_state()
     c4.metric("课堂状态", state)
-    # 最新帧抬头率
     if analyzer.frame_records:
         hr = analyzer.frame_records[-1].head_up_rate
         c5.metric("抬头率", f"{hr*100:.0f}%")
@@ -416,6 +419,7 @@ if input_type == "📷 上传图片":
                 comp_counts[t] = comp_counts.get(t, 0) + 1
             comp_str = " | ".join(f"{COMPOSITE_EMOTION_EMOJI.get(k,'')} {k}:{v}" for k, v in sorted(comp_counts.items(), key=lambda x: -x[1]))
             st.caption(f"课堂情绪: {comp_str}")
+        show_status_bar()
         show_stats()
     else:
         st.markdown(
@@ -501,6 +505,8 @@ elif input_type == "🎬 上传视频":
         cap.release()
         bar.empty()
         st.success(f"处理完成! 共 {processed}/{total_frames} 帧")
+
+        show_status_bar()
 
         # 最终时序图
         st.markdown("---")
@@ -744,6 +750,7 @@ elif input_type == "🎥 实时摄像头":
             except queue.Empty:
                 break
         if processed > 0 or analyzer.frame_records:
+            show_status_bar()
             show_stats()
             if len(analyzer.frame_records) >= 3:
                 show_time_series_chart(key_suffix="cam")
