@@ -433,92 +433,148 @@ if input_type == "📷 上传图片":
 elif input_type == "🎬 上传视频":
     file = st.file_uploader("上传视频", type=["mp4", "avi", "mov"])
     if file:
-        tmp = f"_tmp_{file.name}"
-        with open(tmp, "wb") as f:
-            f.write(file.read())
-        cap = cv2.VideoCapture(tmp)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps
+        # 判断是否新文件
+        is_new = ("vid_state" not in st.session_state
+                  or st.session_state.vid_state.get("file_name") != file.name)
+        if is_new:
+            tmp = f"_tmp_{file.name}"
+            with open(tmp, "wb") as f:
+                f.write(file.read())
+            cap = cv2.VideoCapture(tmp)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                fps = 30
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            analyzer.clear()
+            st.session_state.warning_tracker = WarningTracker()
+            st.session_state.vid_state = {
+                "file_name": file.name,
+                "tmp": tmp,
+                "fps": fps,
+                "total_frames": total_frames,
+                "processed": 0,
+                "running": True,
+            }
 
-        st.info(f"视频: {duration:.0f}秒, {fps:.0f}fps, 逐帧处理中 (处理速度决定播放速度)")
-
-        bar = st.progress(0)
-        slot_img = st.empty()
-        slot_chart = st.empty()
-        slot_status = st.empty()
-
-        processed = 0  # 已处理帧数
-        frame_data = []  # 积累的 PerFrameResult
-
-        # 清空之前的记录和 tracker
-        analyzer.clear()
-        st.session_state.warning_tracker = WarningTracker()
+        vs = st.session_state.vid_state
+        duration = vs["total_frames"] / vs["fps"]
         tracker_local = st.session_state.warning_tracker
 
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            processed += 1
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
+        # ── 顶部控制栏 ──
+        ctl1, ctl2, ctl3 = st.columns([3, 1, 1])
+        with ctl1:
+            pct = vs["processed"] / max(vs["total_frames"], 1) * 100
+            st.markdown(f"🎬 **{vs['file_name']}** | {vs['fps']:.0f}fps | {duration:.0f}s | 已处理 **{vs['processed']}/{vs['total_frames']}** 帧 ({pct:.0f}%)")
+        with ctl2:
+            if st.button("⏹ 停止处理", use_container_width=True, key="vid_stop", type="primary"):
+                vs["running"] = False
+        with ctl3:
+            if st.button("🔄 重置", use_container_width=True, key="vid_reset"):
+                vs["running"] = False
+                del st.session_state["vid_state"]
+                st.rerun()
 
-            elapsed = processed / fps
+        # ── 实时指标卡片 ──
+        if analyzer.frame_records:
+            last_fr = analyzer.frame_records[-1]
+            mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+            mc1.metric("检测人数", last_fr.total_faces)
+            mc2.metric("主导表情", last_fr.main_emotion)
+            mc3.metric("课堂状态", last_fr.classroom_state)
+            mc4.metric("抬头率", f"{last_fr.head_up_rate*100:.0f}%")
+            wl = tracker_local.current_level
+            wl_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(wl, "⚪")
+            mc5.metric("预警等级", f"{wl_emoji} {wl}")
+            mc6.metric("进度", f"{pct:.0f}%")
+        else:
+            st.caption("等待分析数据...")
 
-            per_frame = aggregate_per_frame(
-                emotions, processed, elapsed,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                file.name,
-            )
-            _hp = head_up + head_down
-            per_frame.head_up_count = head_up
-            per_frame.head_down_count = head_down
-            per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-            per_frame.classroom_state = _classify(per_frame)
-            analyzer.add_frame_record(per_frame)
-            frame_data.append(per_frame)
-            save_records(faces, emotions, file.name)
+        bar = st.progress(min(vs["processed"] / max(vs["total_frames"], 1), 1.0))
 
-            # 预警追踪
-            warning_level = tracker_local.feed(per_frame.classroom_state)
-            level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(warning_level, "⚪")
+        # ── 分栏：帧画面 + 时序图 ──
+        col_img, col_chart = st.columns([1, 1.2])
+        slot_img = col_img.empty()
+        slot_chart = col_chart.empty()
 
-            # 显示当前帧
-            result = render_result(rgb, faces, emotions, composite_emotions)
-            slot_img.image(result, use_container_width=True)
-            slot_status.markdown(
-                f"**帧 {processed}/{total_frames}** ({elapsed:.0f}s/{duration:.0f}s) | 检测: {per_frame.total_faces}人 | "
-                f"抬头率: {per_frame.head_up_rate*100:.0f}% | "
-                f"课堂状态: {per_frame.classroom_state} | "
-                f"预警: {level_emoji} {warning_level} "
-                f"({tracker_local.good_streak}G/{tracker_local.stable_streak}S/"
-                f"{tracker_local.low_streak}L/{tracker_local.volatile_streak}V)"
-            )
+        if vs["running"]:
+            # 每批处理 8 帧
+            cap = cv2.VideoCapture(vs["tmp"])
+            cap.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"])
 
-            # 实时更新时序图
-            if len(frame_data) >= 2:
-                with slot_chart.container():
-                    show_time_series_chart(key_suffix=f"live_{processed}")
+            batch_size = 8
+            last_per_frame = None
+            batch_processed = 0
+            for _ in range(batch_size):
+                ok, frame = cap.read()
+                if not ok:
+                    vs["running"] = False
+                    break
+                vs["processed"] += 1
+                batch_processed += 1
 
-            bar.progress(min(processed / total_frames, 1.0))
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
 
-        cap.release()
-        bar.empty()
-        st.success(f"处理完成! 共 {processed}/{total_frames} 帧")
+                elapsed = vs["processed"] / vs["fps"]
+
+                per_frame = aggregate_per_frame(
+                    emotions, vs["processed"], elapsed,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    file.name,
+                )
+                _hp = head_up + head_down
+                per_frame.head_up_count = head_up
+                per_frame.head_down_count = head_down
+                per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
+                per_frame.classroom_state = _classify(per_frame)
+                analyzer.add_frame_record(per_frame)
+                save_records(faces, emotions, file.name)
+                tracker_local.feed(per_frame.classroom_state)
+                last_per_frame = per_frame
+
+            cap.release()
+
+            # 显示最新帧 + 时序图
+            if last_per_frame is not None:
+                cap2 = cv2.VideoCapture(vs["tmp"])
+                cap2.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"] - 1)
+                ok, show_frame = cap2.read()
+                cap2.release()
+                if ok:
+                    show_rgb = cv2.cvtColor(show_frame, cv2.COLOR_BGR2RGB)
+                    faces2, emo2, _, _, comp2 = process_frame(show_rgb)
+                    result = render_result(show_rgb, faces2, emo2, comp2)
+                    slot_img.image(result, use_container_width=True)
+
+            with slot_chart.container():
+                if len(analyzer.frame_records) >= 2:
+                    show_time_series_chart(key_suffix="live")
+
+            bar.progress(min(vs["processed"] / max(vs["total_frames"], 1), 1.0))
+
+            if vs["running"]:
+                st.rerun()
+
+        # ── 处理完毕后展示最终结果 ──
+        st.markdown("---")
+        if vs["processed"] >= vs["total_frames"]:
+            st.success(f"✅ 处理完成! 共 {vs['processed']}/{vs['total_frames']} 帧")
+        else:
+            st.info(f"⏸ 已停止 (已处理 {vs['processed']}/{vs['total_frames']} 帧)")
 
         show_status_bar()
 
-        # 最终时序图
         st.markdown("---")
-        show_time_series_chart(key_suffix="final")
+        if len(analyzer.frame_records) >= 2:
+            show_time_series_chart(key_suffix="final")
+        elif analyzer.frame_records:
+            st.info("至少需要 2 帧数据才能显示时序图")
 
         # 趋势分析结论
-        st.markdown("---")
-        st.subheader("📋 趋势分析结论")
         if analyzer.frame_records:
+            st.markdown("---")
+            st.subheader("📋 趋势分析结论")
             states = [fr.classroom_state for fr in analyzer.frame_records]
             good_pct = sum(1 for s in states if "良好" in s) / len(states) * 100
             low_pct = sum(1 for s in states if "低落" in s) / len(states) * 100
@@ -526,18 +582,20 @@ elif input_type == "🎬 上传视频":
             stable_pct = sum(1 for s in states if "平稳" in s) / len(states) * 100
 
             avg_head_up = sum(fr.head_up_rate for fr in analyzer.frame_records) / len(analyzer.frame_records) * 100
-            st.write(f"- 平均抬头率: **{avg_head_up:.1f}%**")
-            st.write(f"- 状态良好占比: **{good_pct:.1f}%**")
-            st.write(f"- 状态平稳占比: **{stable_pct:.1f}%**")
-            st.write(f"- 需关注占比: **{low_pct:.1f}%**")
-            st.write(f"- 注意力波动占比: **{volatile_pct:.1f}%**")
 
-            warning_levels = [w for w in
-                [compute_sliding_window(analyzer.frame_records)]
-                if w]
-            if warning_levels:
-                red_count = sum(1 for wr in warning_levels[0] if wr.warning_level == "Red")
-                yellow_count = sum(1 for wr in warning_levels[0] if wr.warning_level == "Yellow")
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                st.write(f"- 平均抬头率: **{avg_head_up:.1f}%**")
+                st.write(f"- 状态良好占比: **{good_pct:.1f}%**")
+                st.write(f"- 状态平稳占比: **{stable_pct:.1f}%**")
+            with tc2:
+                st.write(f"- 需关注占比: **{low_pct:.1f}%**")
+                st.write(f"- 注意力波动占比: **{volatile_pct:.1f}%**")
+
+            window_results = compute_sliding_window(analyzer.frame_records)
+            if window_results:
+                red_count = sum(1 for wr in window_results if wr.warning_level == "Red")
+                yellow_count = sum(1 for wr in window_results if wr.warning_level == "Yellow")
                 if red_count > 0:
                     st.error(f"⚠️ 检测到 {red_count} 次红色预警（低落/波动），建议关注该时段")
                 elif yellow_count > 0:
