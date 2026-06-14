@@ -519,12 +519,14 @@ elif input_type == "🎬 上传视频":
             cap = cv2.VideoCapture(vs["tmp"])
             cap.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"])
 
-            # 跳到下一个分析点：跳过 analysis_sec 秒的帧，只分析1帧
-            skip_frames = max(1, int(vs["fps"] * analysis_sec))
-            last_result = None
+            # 每批读 analysis_sec 秒的帧，全部正常过一遍，但只分析其中1帧
+            batch_frames = max(1, int(vs["fps"] * analysis_sec))
+            # 分析点：取这批中间那帧
+            analyze_at = batch_frames // 2
+            last_display = None
             analyzed_this_batch = False
 
-            for i in range(skip_frames):
+            for i in range(batch_frames):
                 ok, frame = cap.read()
                 if not ok:
                     vs["running"] = False
@@ -533,10 +535,10 @@ elif input_type == "🎬 上传视频":
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # 每批只分析第一帧
-                if not analyzed_this_batch:
+                # 分析：每批只跑一次
+                if i == analyze_at and not analyzed_this_batch:
                     faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
-                    last_result = render_result(rgb, faces, emotions, composite_emotions)
+                    last_display = render_result(rgb, faces, emotions, composite_emotions)
                     elapsed = vs["processed"] / vs["fps"]
 
                     per_frame = aggregate_per_frame(
@@ -553,12 +555,15 @@ elif input_type == "🎬 上传视频":
                     save_records(faces, emotions, file.name)
                     tracker_local.feed(per_frame.classroom_state)
                     analyzed_this_batch = True
+                elif last_display is None:
+                    # 还没分析时，显示原始帧
+                    last_display = rgb
 
             cap.release()
 
-            # 保存分析结果图，下次渲染时先用这张图占位
-            if last_result is not None:
-                st.session_state.vid_display = last_result
+            # 缓存显示图，下次渲染时先用这张图占位避免闪烁
+            if last_display is not None:
+                st.session_state.vid_display = last_display
 
             if vs["running"]:
                 st.rerun()
