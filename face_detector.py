@@ -32,8 +32,8 @@ def _get_detector():
             )
         _detector = cv2.FaceDetectorYN.create(
             model_path, "",
-            (320, 320),
-            score_threshold=0.5,
+            (1024, 1024),
+            score_threshold=0.30,
             nms_threshold=0.3,
             top_k=500,
         )
@@ -41,7 +41,7 @@ def _get_detector():
 
 
 def detect_faces(image: np.ndarray) -> list[Face]:
-    """YuNet DNN 检测所有人脸 + 5个面部关键点"""
+    """YuNet DNN 检测所有人脸 + 5个面部关键点，宽图自动分块检测"""
     h, w = image.shape[:2]
 
     if len(image.shape) == 3:
@@ -50,40 +50,81 @@ def detect_faces(image: np.ndarray) -> list[Face]:
         bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
     detector = _get_detector()
-    detector.setInputSize((w, h))
 
-    _, results = detector.detect(bgr)
+    # 宽图/全景 → 分块检测（每块 640px，20% 重叠），小人脸也能抓到
+    TILE = 640
+    if w > TILE + 100:
+        faces_raw = []
+        overlap = int(TILE * 0.2)
+        step = TILE - overlap
+        x_starts = list(range(0, w - TILE, step)) + [max(0, w - TILE)]
+        y_starts = list(range(0, h - TILE, step)) if h > TILE + 100 else [0]
 
-    faces = []
-    if results is not None and len(results) > 0:
-        for det in results:
-            x1 = int(det[0])
-            y1 = int(det[1])
-            bw, bh = det[2], det[3]
-            conf = float(det[14])
+        for y0 in y_starts:
+            y1 = min(h, y0 + TILE)
+            for x0 in x_starts:
+                x1 = min(w, x0 + TILE)
+                tile = bgr[y0:y1, x0:x1]
+                detector.setInputSize((x1 - x0, y1 - y0))
+                _, results = detector.detect(tile)
+                if results is not None and len(results) > 0:
+                    for det in results:
+                        # 坐标转回全图
+                        bx, by = int(det[0]) + x0, int(det[1]) + y0
+                        bw, bh = det[2], det[3]
+                        conf = float(det[14])
+                        if bw < 12 or bh < 12:
+                            continue
+                        lms = np.array([
+                            [det[4]+x0, det[5]+y0],
+                            [det[6]+x0, det[7]+y0],
+                            [det[8]+x0, det[9]+y0],
+                            [det[10]+x0, det[11]+y0],
+                            [det[12]+x0, det[13]+y0],
+                        ], dtype=np.float64)
+                        faces_raw.append((bx, by, bw, bh, conf, lms))
 
-            if bw < 20 or bh < 20:
-                continue
+        # NMS 去重（跨块边界的重复检测）
+        if faces_raw:
+            boxes = np.array([[f[0], f[1], f[0]+f[2], f[1]+f[3]] for f in faces_raw], dtype=np.float32)
+            scores = np.array([f[4] for f in faces_raw], dtype=np.float32)
+            indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), 0.30, 0.3)
+            if len(indices) > 0:
+                faces_raw = [faces_raw[i] for i in indices.flatten()]
 
-            # 提取5个关键点 (YuNet: 右眼 左眼 鼻尖 右嘴角 左嘴角)
-            landmarks = np.array([
-                [det[4], det[5]],    # right eye
-                [det[6], det[7]],    # left eye
-                [det[8], det[9]],    # nose tip
-                [det[10], det[11]],  # right mouth
-                [det[12], det[13]],  # left mouth
-            ], dtype=np.float64)
-
-            # Padding for expression recognition context
+        faces = []
+        for bx, by, bw, bh, conf, lms in faces_raw:
             pad_w = int(bw * 0.15)
             pad_h = int(bh * 0.15)
-            x1 = max(0, x1 - pad_w)
-            y1 = max(0, y1 - pad_h)
-            x2 = min(w, int(det[0] + bw + pad_w))
-            y2 = min(h, int(det[1] + bh + pad_h))
-
-            faces.append(Face(bbox=(x1, y1, x2, y2), confidence=conf,
-                            landmarks=landmarks))
+            x1 = max(0, bx - pad_w)
+            y1 = max(0, by - pad_h)
+            x2 = min(w, bx + bw + pad_w)
+            y2 = min(h, by + bh + pad_h)
+            faces.append(Face(bbox=(x1, y1, x2, y2), confidence=conf, landmarks=lms))
+    else:
+        # 窄图直接全图检测
+        detector.setInputSize((w, h))
+        _, results = detector.detect(bgr)
+        faces = []
+        if results is not None and len(results) > 0:
+            for det in results:
+                x1 = int(det[0])
+                y1 = int(det[1])
+                bw, bh = det[2], det[3]
+                conf = float(det[14])
+                if bw < 15 or bh < 15:
+                    continue
+                landmarks = np.array([
+                    [det[4], det[5]], [det[6], det[7]], [det[8], det[9]],
+                    [det[10], det[11]], [det[12], det[13]],
+                ], dtype=np.float64)
+                pad_w = int(bw * 0.15)
+                pad_h = int(bh * 0.15)
+                x1 = max(0, x1 - pad_w)
+                y1 = max(0, y1 - pad_h)
+                x2 = min(w, int(det[0] + bw + pad_w))
+                y2 = min(h, int(det[1] + bh + pad_h))
+                faces.append(Face(bbox=(x1, y1, x2, y2), confidence=conf, landmarks=landmarks))
 
     faces.sort(key=lambda f: f.confidence, reverse=True)
     return faces

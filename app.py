@@ -225,7 +225,7 @@ def show_stats():
         st.dataframe(pd.DataFrame(analyzer.records), use_container_width=True, height=200)
 
 
-def show_time_series_chart():
+def show_time_series_chart(key_suffix: str = ""):
     """显示时序折线图 + 预警标记"""
     fr_data = analyzer.get_per_frame_data()
     if len(fr_data) < 2:
@@ -288,7 +288,8 @@ def show_time_series_chart():
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True,
+                    key=f"ts_chart_{key_suffix}" if key_suffix else None)
 
     # 预警日志表格
     if window_results:
@@ -361,11 +362,11 @@ elif input_type == "🎬 上传视频":
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps
 
-        # 1fps 采样：计算帧间隔
-        frame_interval = max(1, int(fps))
+        # 2fps 采样：每半秒取一帧
+        frame_interval = max(1, int(fps / 2))
         sampled = total_frames // frame_interval
 
-        st.info(f"视频: {duration:.0f}秒, {fps:.0f}fps, 采样 ~{sampled} 帧 (每 {frame_interval} 帧采1帧)")
+        st.info(f"视频: {duration:.0f}秒, {fps:.0f}fps, 采样 ~{sampled} 帧 (2fps)")
 
         bar = st.progress(0)
         slot_img = st.empty()
@@ -428,7 +429,7 @@ elif input_type == "🎬 上传视频":
             # 实时更新时序图
             if len(frame_data) >= 2:
                 with slot_chart.container():
-                    show_time_series_chart()
+                    show_time_series_chart(key_suffix=f"live_{processed}")
 
             bar.progress(min(n / total_frames, 1.0))
 
@@ -438,7 +439,7 @@ elif input_type == "🎬 上传视频":
 
         # 最终时序图
         st.markdown("---")
-        show_time_series_chart()
+        show_time_series_chart(key_suffix="final")
 
         # 趋势分析结论
         st.markdown("---")
@@ -676,6 +677,6 @@ elif input_type == "🎥 实时摄像头":
         if processed > 0 or analyzer.frame_records:
             show_stats()
             if len(analyzer.frame_records) >= 3:
-                show_time_series_chart()
+                show_time_series_chart(key_suffix="cam")
 
     _cam_stats_panel()
