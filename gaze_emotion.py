@@ -1,22 +1,26 @@
 """课堂复合情绪 — 融合表情识别 + 头姿态(yaw/pitch) 推导更丰富的课堂状态"""
 
 CLASSROOM_EMOTIONS = [
-    "Focused",       # looking at screen + neutral/happy
-    "Distracted",    # large yaw (looking sideways)
-    "Engaged",       # happy + looking forward
-    "Confused",      # surprise/fear + head tilt
-    "Thinking",      # head down + neutral
-    "Tired",         # head down + sad
+    "Focused",       # 专注：看前方 + neutral/happy
+    "Distracted",    # 分心：大幅度转头看别处
+    "Engaged",       # 积极参与：开心 + 看前方
+    "Confused",      # 困惑：惊讶/恐惧 + 头部倾斜
+    "Thinking",      # 思考：低头 + neutral
+    "Tired",         # 疲劳：低头 + sad
+    "Bored",         # 无聊：低头 + neutral/contempt
+    "Anxious",       # 焦虑：频繁转头 + fear/sad
 ]
 
 # (主导表情, 次选表情, yaw阈值, pitch阈值, 系数)
 _RULES = {
-    "Focused":      (["Neutral", "Happy"],    15, 10,  1.2),
-    "Engaged":      (["Happy"],               15, 10,  1.3),
-    "Distracted":   (["Neutral", "Sad"],      60, 99,  1.2),
-    "Confused":     (["Surprise", "Fear"],    20, 15,  1.3),
-    "Thinking":     (["Neutral", "Sad"],      15, 15,  1.1),
-    "Tired":        (["Sad"],                 15, 15,  1.3),
+    "Focused":      (["Neutral", "Happy"],         15, 10,  1.2),
+    "Engaged":      (["Happy"],                    15, 10,  1.3),
+    "Distracted":   (["Neutral", "Sad", "Contempt"], 60, 99, 1.2),
+    "Confused":     (["Surprise", "Fear"],         20, 15,  1.3),
+    "Thinking":     (["Neutral", "Sad"],           15, 15,  1.1),
+    "Tired":        (["Sad"],                      15, 15,  1.3),
+    "Bored":        (["Neutral", "Contempt"],      15, 15,  1.2),
+    "Anxious":      (["Fear", "Sad"],              20, 15,  1.2),
 }
 
 

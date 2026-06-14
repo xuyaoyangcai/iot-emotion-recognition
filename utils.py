@@ -35,6 +35,7 @@ EMOTION_COLORS = {
     "Surprise": (255, 120, 0),   # 橙色
     "Fear": (100, 0, 100),       # 紫色
     "Disgust": (0, 100, 50),     # 深绿
+    "Contempt": (80, 200, 200),  # 青色
 }
 
 # 表情 → Emoji 字符
@@ -46,6 +47,7 @@ EMOTION_EMOJI = {
     "Surprise": "😲",
     "Fear": "😨",
     "Disgust": "🤢",
+    "Contempt": "😏",
 }
 
 # 课堂状态 → 颜色映射
@@ -65,6 +67,8 @@ COMPOSITE_EMOTION_COLORS = {
     "Confused":    (0, 120, 255),     # orange
     "Thinking":    (50, 150, 200),    # blue-gray
     "Tired":       (150, 50, 100),    # dark blue
+    "Bored":       (180, 180, 100),   # teal-gray
+    "Anxious":     (200, 50, 200),    # magenta
 }
 
 COMPOSITE_EMOTION_EMOJI = {
@@ -74,6 +78,8 @@ COMPOSITE_EMOTION_EMOJI = {
     "Confused":    "🤔",
     "Thinking":    "💭",
     "Tired":       "😴",
+    "Bored":       "🥱",
+    "Anxious":     "😰",
 }
 
 # 表情 → 滤镜色调 (RGB 偏色系数)
@@ -85,6 +91,7 @@ MOOD_FILTERS = {
     "Surprise": (1.0, 0.8, 1.1),   # 淡紫
     "Fear": (0.8, 0.8, 1.0),       # 暗蓝
     "Disgust": (0.8, 1.1, 0.7),    # 偏绿
+    "Contempt": (0.9, 1.0, 0.8),   # 冷淡
 }
 
 

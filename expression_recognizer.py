@@ -6,9 +6,10 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageEnhance
-from transformers import AutoImageProcessor, AutoModelForImageClassification
+from transformers import (AutoImageProcessor, AutoModelForImageClassification,
+                          ViTImageProcessor)
 
-EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
+EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral", "Contempt"]
 
 _LABEL_MAPS = [
     {  # dima806
@@ -18,6 +19,11 @@ _LABEL_MAPS = [
     {  # mo-thecreator
         "angry": "Angry", "anger": "Angry", "disgust": "Disgust", "fear": "Fear",
         "happy": "Happy", "sad": "Sad", "surprise": "Surprise", "neutral": "Neutral",
+    },
+    {  # HardlyHumans (8-class, includes contempt)
+        "angry": "Angry", "anger": "Angry", "contempt": "Contempt",
+        "disgust": "Disgust", "fear": "Fear", "happy": "Happy",
+        "neutral": "Neutral", "sad": "Sad", "surprise": "Surprise",
     },
 ]
 
@@ -36,11 +42,13 @@ def _augment_variants(face_img: np.ndarray) -> list[Image.Image]:
 
 
 class ExpressionRecognizer:
-    """双模型集成：dima806 + mo-thecreator ViT，平均概率互相纠偏"""
+    """三模型集成：dima806 + mo-thecreator + HardlyHumans ViT，平均概率互相纠偏"""
 
-    _MODEL_NAMES = [
-        "dima806/facial_emotions_image_detection",
-        "mo-thecreator/vit-Facial-Expression-Recognition",
+    # (model_name, use_vit_processor)
+    _MODEL_SPECS = [
+        ("dima806/facial_emotions_image_detection", False),
+        ("mo-thecreator/vit-Facial-Expression-Recognition", False),
+        ("HardlyHumans/Facial-expression-detection", True),
     ]
 
     def __init__(self, device: int = 0):
@@ -50,8 +58,11 @@ class ExpressionRecognizer:
         self._processors = []
         self._id2labels = []
 
-        for name in self._MODEL_NAMES:
-            proc = AutoImageProcessor.from_pretrained(name)
+        for name, use_vit in self._MODEL_SPECS:
+            if use_vit:
+                proc = ViTImageProcessor.from_pretrained(name)
+            else:
+                proc = AutoImageProcessor.from_pretrained(name)
             model = AutoModelForImageClassification.from_pretrained(name)
             model.to(self._device)
             model.eval()
@@ -60,9 +71,9 @@ class ExpressionRecognizer:
             self._id2labels.append(model.config.id2label)
 
     def recognize(self, face_img: np.ndarray, head_status: str = None) -> dict[str, float]:
-        """双模型集成推理：两个模型各自TTA，平均所有概率"""
+        """三模型集成推理：各自TTA，平均所有概率"""
         variants = _augment_variants(face_img)
-        all_probs = []  # 收集每个模型的概率
+        all_probs = []
 
         for proc, model, id2label, label_map in zip(
             self._processors, self._models, self._id2labels, _LABEL_MAPS
@@ -89,7 +100,7 @@ class ExpressionRecognizer:
                 model_probs = {k: v / total for k, v in model_probs.items()}
             all_probs.append(model_probs)
 
-        # 两个模型平均
+        # 三模型平均
         probs = {}
         all_keys = set()
         for mp in all_probs:
@@ -103,13 +114,13 @@ class ExpressionRecognizer:
             return {e: 0.0 for e in EMOTIONS}
         probs = {k: v / total for k, v in probs.items()}
 
-        # 温和温度缩放（集成后偏差已减小，用更温和的 T）
+        # 温度缩放
         t = 0.65
         probs = {k: v ** (1.0 / t) for k, v in probs.items()}
         total = sum(probs.values())
         probs = {k: v / total for k, v in probs.items()}
 
-        # Neutral 压制（集成后大幅减弱）
+        # Neutral 压制
         top = max(probs, key=probs.get)
         sorted_items = sorted(probs.items(), key=lambda x: x[1], reverse=True)
         neutral_val = probs.get("Neutral", 0)
@@ -126,7 +137,7 @@ class ExpressionRecognizer:
         elif neutral_val > 0.30:
             probs["Neutral"] *= 0.80
 
-        # Sad 偏置修正（集成后温和很多）
+        # Sad 偏置修正
         sad_val = probs.get("Sad", 0)
         if top == "Sad" and sad_val > 0.50:
             gap = sorted_items[0][1] - sorted_items[1][1]

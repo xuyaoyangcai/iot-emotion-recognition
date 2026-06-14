@@ -46,6 +46,9 @@ def classify_classroom_state(counts: dict, total: int,
     sad = counts.get("Sad", 0)
     angry = counts.get("Angry", 0)
     surprise = counts.get("Surprise", 0)
+    contempt = counts.get("Contempt", 0)
+    fear = counts.get("Fear", 0)
+    disgust = counts.get("Disgust", 0)
 
     # 规则1: 低头率过高 (>50%) → 需关注，优先级最高
     if head_up_rate < 0.50:
@@ -55,9 +58,13 @@ def classify_classroom_state(counts: dict, total: int,
     if (happy + neutral) / total >= 0.70 and head_up_rate >= 0.60:
         return "课堂状态良好"
 
-    # 规则3: Sad + Angry >= 40% → 需关注
-    if (sad + angry) / total >= 0.40:
+    # 规则3: Sad + Angry + Contempt >= 40% → 需关注
+    if (sad + angry + contempt) / total >= 0.40:
         return "课堂状态较低落或需要关注"
+
+    # 规则4: Contempt 占比最高 → 注意力波动（轻蔑/不屑）
+    if contempt == max_count and contempt > 0:
+        return "课堂注意力波动较大"
 
     max_count = max(counts.values())
     if max_count == 0:
@@ -152,6 +159,7 @@ def _window_warning(mean_vals: dict, head_up_mean: float = 1.0) -> str:
     sad = mean_vals.get("Sad", 0)
     angry = mean_vals.get("Angry", 0)
     fear = mean_vals.get("Fear", 0)
+    contempt = mean_vals.get("Contempt", 0)
     happy = mean_vals.get("Happy", 0)
     neutral = mean_vals.get("Neutral", 0)
 
@@ -159,7 +167,7 @@ def _window_warning(mean_vals: dict, head_up_mean: float = 1.0) -> str:
     if head_up_mean < 0.40:
         return "Red"
     # 负面情绪高 → Red
-    if sad + angry + fear > 0.40:
+    if sad + angry + fear + contempt > 0.40:
         return "Red"
     # 中性占比过高 + 低头率偏高 → Yellow
     if neutral > 0.55 and head_up_mean < 0.70:

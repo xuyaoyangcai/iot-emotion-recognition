@@ -64,9 +64,8 @@ class ResultAnalyzer:
 
     def export_csv(self, filepath_or_buffer):
         """导出为课堂状态 CSV 格式"""
-        fieldnames = ["时间", "图片名称", "检测人数",
-                      "Happy人数", "Neutral人数", "Sad人数", "Angry人数",
-                      "主要表情", "课堂状态"]
+        emo_cols = [f"{e}人数" for e in EMOTIONS]
+        fieldnames = ["时间", "图片名称", "检测人数"] + emo_cols + ["主要表情", "课堂状态"]
 
         if isinstance(filepath_or_buffer, str):
             f = open(filepath_or_buffer, "w", newline="", encoding="utf-8-sig")
@@ -80,17 +79,16 @@ class ResultAnalyzer:
 
             if self.frame_records:
                 for fr in self.frame_records:
-                    writer.writerow({
+                    row = {
                         "时间": fr.timestamp_str,
                         "图片名称": fr.image_name,
                         "检测人数": fr.total_faces,
-                        "Happy人数": fr.counts.get("Happy", 0),
-                        "Neutral人数": fr.counts.get("Neutral", 0),
-                        "Sad人数": fr.counts.get("Sad", 0),
-                        "Angry人数": fr.counts.get("Angry", 0),
                         "主要表情": fr.main_emotion,
                         "课堂状态": fr.classroom_state,
-                    })
+                    }
+                    for e in EMOTIONS:
+                        row[f"{e}人数"] = fr.counts.get(e, 0)
+                    writer.writerow(row)
             else:
                 # 无帧记录时从 per-face records 聚合
                 groups = {}
@@ -112,11 +110,8 @@ class ResultAnalyzer:
                         "时间": ts,
                         "图片名称": img,
                         "检测人数": total,
-                        "Happy人数": counts.get("Happy", 0),
-                        "Neutral人数": counts.get("Neutral", 0),
-                        "Sad人数": counts.get("Sad", 0),
-                        "Angry人数": counts.get("Angry", 0),
                         "主要表情": main,
+                        **{f"{e}人数": counts.get(e, 0) for e in EMOTIONS},
                         "课堂状态": state,
                     })
         finally:
@@ -126,9 +121,8 @@ class ResultAnalyzer:
     def export_time_series_csv(self, filepath_or_buffer,
                                window_results: list = None):
         """导出时序分析 CSV：帧号、时间戳、窗口均值、预警等级"""
-        fieldnames = ["帧号", "时间_秒", "时间", "图片名称", "检测人数",
-                      "Happy均值", "Neutral均值", "Sad均值", "Angry均值",
-                      "预警等级"]
+        emo_cols = [f"{e}均值" for e in EMOTIONS]
+        fieldnames = ["帧号", "时间_秒", "时间", "图片名称", "检测人数"] + emo_cols + ["预警等级"]
 
         if isinstance(filepath_or_buffer, str):
             f = open(filepath_or_buffer, "w", newline="", encoding="utf-8-sig")
@@ -154,12 +148,11 @@ class ResultAnalyzer:
                     "时间": fr.timestamp_str,
                     "图片名称": fr.image_name,
                     "检测人数": fr.total_faces,
-                    "Happy均值": round(wr.window_mean.get("Happy", 0) * 100, 1) if wr else "",
-                    "Neutral均值": round(wr.window_mean.get("Neutral", 0) * 100, 1) if wr else "",
-                    "Sad均值": round(wr.window_mean.get("Sad", 0) * 100, 1) if wr else "",
-                    "Angry均值": round(wr.window_mean.get("Angry", 0) * 100, 1) if wr else "",
                     "预警等级": wr.warning_level if wr else "",
                 }
+                for e in EMOTIONS:
+                    row[f"{e}均值"] = round(wr.window_mean.get(e, 0) * 100, 1) if wr else ""
+                writer.writerow(row)
                 writer.writerow(row)
         finally:
             if _close:

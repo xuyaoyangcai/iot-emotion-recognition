@@ -37,6 +37,55 @@ from classroom_state import (
 
 st.set_page_config(page_title="课堂状态分析系统", page_icon="🏫", layout="wide")
 
+# ── 自定义CSS ──
+st.markdown("""
+<style>
+    /* 指标卡片 */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+        border-radius: 12px;
+        padding: 12px 16px;
+        border: 1px solid #e0e0e0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    [data-testid="stMetric"]:hover {
+        box-shadow: 0 3px 8px rgba(0,0,0,0.10);
+        border-color: #c0c0c0;
+    }
+    [data-testid="stMetric"] label {
+        font-size: 0.78rem;
+        color: #666;
+        font-weight: 500;
+    }
+    [data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        font-size: 1.6rem;
+        font-weight: 700;
+    }
+    /* 侧边栏 */
+    section[data-testid="stSidebar"] .stButton > button {
+        width: 100%;
+    }
+    section[data-testid="stSidebar"] .stDownloadButton > button {
+        width: 100%;
+        margin-bottom: 4px;
+    }
+    /* 主标题 */
+    h1 { font-weight: 700 !important; letter-spacing: -0.5px; }
+    /* 空状态引导 */
+    .empty-guide {
+        text-align: center;
+        padding: 60px 20px;
+        color: #999;
+        background: #fafafa;
+        border-radius: 16px;
+        border: 2px dashed #e0e0e0;
+    }
+    .empty-guide h2 { color: #666; margin-bottom: 8px; }
+    /* 分区分隔 */
+    .section-divider { margin: 1.5rem 0; border-top: 1px solid #eee; }
+</style>
+""", unsafe_allow_html=True)
+
 # ── 初始化 ──
 if "analyzer" not in st.session_state:
     st.session_state.analyzer = ResultAnalyzer()
@@ -56,46 +105,48 @@ tracker = st.session_state.warning_tracker
 # ── 侧边栏 ──
 with st.sidebar:
     st.title("🏫 课堂状态分析")
-    mode = st.radio("显示模式", ["📊 仪表盘模式", "🪞 魔镜模式"])
-    st.markdown("---")
-    input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 实时摄像头"])
-    threshold = st.slider("检测阈值", 0.3, 0.9, 0.4, 0.05)
-    st.markdown("---")
+
+    with st.expander("⚙️ 模式设置", expanded=True):
+        mode = st.radio("显示模式", ["📊 仪表盘模式", "🪞 魔镜模式"], label_visibility="collapsed")
+        input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 实时摄像头"], label_visibility="collapsed")
+        threshold = st.slider("检测阈值", 0.3, 0.9, 0.4, 0.05)
 
     # 课堂状态实时显示
     state = analyzer.get_latest_classroom_state()
-    if state != "N/A":
-        color = CLASSROOM_STATE_COLORS.get(state, "#888")
-        st.markdown(f"**当前课堂状态:** :{'green' if '良好' in state else 'orange' if '平稳' in state else 'red' if '低落' in state or '波动' in state else 'gray'}[{state}]")
-
     warning_level = tracker.current_level
-    if warning_level != "Normal":
-        level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(warning_level, "⚪")
-        st.markdown(f"**预警等级: {level_emoji} {warning_level}**")
+    if state != "N/A" or warning_level != "Normal":
+        st.markdown("---")
+        if state != "N/A":
+            color = CLASSROOM_STATE_COLORS.get(state, "#888")
+            st.markdown(f"**课堂状态:** :{'green' if '良好' in state else 'orange' if '平稳' in state else 'red' if '低落' in state or '波动' in state else 'gray'}[{state}]")
+        if warning_level != "Normal":
+            level_emoji = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}.get(warning_level, "⚪")
+            st.markdown(f"**预警: {level_emoji} {warning_level}**")
 
     st.markdown("---")
-    if st.button("🔄 重置统计"):
+    if st.button("🔄 重置统计", use_container_width=True):
         analyzer.clear()
         st.session_state.warning_tracker = WarningTracker()
         st.rerun()
 
     # CSV 导出
-    if analyzer.records:
-        buf = StringIO()
-        analyzer.export_csv(buf)
-        st.download_button("📥 导出课堂状态CSV", buf.getvalue(),
-                           f"classroom_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                           mime="text/csv")
-
-    # 时序 CSV 导出（有帧记录时显示）
-    if analyzer.frame_records:
-        ts_buf = StringIO()
-        window_results = compute_sliding_window(analyzer.frame_records) \
-            if len(analyzer.frame_records) >= 5 else None
-        analyzer.export_time_series_csv(ts_buf, window_results)
-        st.download_button("📈 导出时序分析CSV", ts_buf.getvalue(),
-                           f"timeline_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                           mime="text/csv")
+    with st.expander("📥 导出数据", expanded=False):
+        if analyzer.records:
+            buf = StringIO()
+            analyzer.export_csv(buf)
+            st.download_button("📊 课堂状态CSV", buf.getvalue(),
+                               f"classroom_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                               mime="text/csv", use_container_width=True)
+        if analyzer.frame_records:
+            ts_buf = StringIO()
+            window_results = compute_sliding_window(analyzer.frame_records) \
+                if len(analyzer.frame_records) >= 5 else None
+            analyzer.export_time_series_csv(ts_buf, window_results)
+            st.download_button("📈 时序分析CSV", ts_buf.getvalue(),
+                               f"timeline_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                               mime="text/csv", use_container_width=True)
+        if not analyzer.records and not analyzer.frame_records:
+            st.caption("暂无数据可导出")
 
 def _classify(per_frame):
     """课堂状态分类，传入抬头率"""
@@ -211,13 +262,31 @@ def show_stats():
     if data:
         left, right = st.columns(2)
         with left:
-            fig = go.Figure(data=[go.Pie(labels=list(data.keys()), values=list(data.values()), hole=0.5)])
-            fig.update_layout(title="情绪占比", height=300, margin=dict(l=10, r=10, t=40, b=10))
+            pie_colors = [
+                "#FFD700" if e == "Happy" else "#AAAAAA" if e == "Neutral" else
+                "#4488CC" if e == "Sad" else "#DD4444" if e == "Angry" else
+                "#FF8800" if e == "Surprise" else "#8844AA" if e == "Fear" else
+                "#44AA55" if e == "Disgust" else "#44CCCC"
+                for e in data.keys()
+            ]
+            fig = go.Figure(data=[go.Pie(labels=list(data.keys()), values=list(data.values()),
+                                         hole=0.5, marker=dict(colors=pie_colors))])
+            fig.update_layout(title="情绪占比", height=320, margin=dict(l=10, r=10, t=40, b=10),
+                            template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
         with right:
+            bar_colors = [
+                "#FFD700" if e == "Happy" else "#AAAAAA" if e == "Neutral" else
+                "#4488CC" if e == "Sad" else "#DD4444" if e == "Angry" else
+                "#FF8800" if e == "Surprise" else "#8844AA" if e == "Fear" else
+                "#44AA55" if e == "Disgust" else "#44CCCC"
+                for e in data.keys()
+            ]
             fig = px.bar(x=list(data.keys()), y=list(data.values()), title="各表情计数",
                          labels={"x": "表情", "y": "次数"})
-            fig.update_layout(height=300, margin=dict(l=10, r=10, t=40, b=10))
+            fig.update_traces(marker_color=bar_colors)
+            fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10),
+                            template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
     if analyzer.records:
         st.markdown("---")
@@ -235,9 +304,10 @@ def show_time_series_chart(key_suffix: str = ""):
 
     fig = go.Figure()
 
-    plot_emotions = ["Happy", "Neutral", "Sad", "Angry", "Surprise"]
+    plot_emotions = ["Happy", "Neutral", "Sad", "Angry", "Surprise", "Fear", "Disgust", "Contempt"]
     colors = {"Happy": "#FFD700", "Neutral": "#AAAAAA", "Sad": "#4488CC",
-              "Angry": "#DD4444", "Surprise": "#FF8800"}
+              "Angry": "#DD4444", "Surprise": "#FF8800", "Fear": "#8844AA",
+              "Disgust": "#44AA55", "Contempt": "#44CCCC"}
 
     for emo in plot_emotions:
         y_vals = [fr.ratios.get(emo, 0) * 100 for fr in fr_data]
@@ -283,10 +353,11 @@ def show_time_series_chart(key_suffix: str = ""):
         xaxis_title="时间 (秒)",
         yaxis_title="占比 (%)",
         yaxis_range=[0, 100],
-        height=350,
+        height=400,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
+        template="plotly_white",
     )
     st.plotly_chart(fig, use_container_width=True,
                     key=f"ts_chart_{key_suffix}" if key_suffix else None)
@@ -347,7 +418,10 @@ if input_type == "📷 上传图片":
             st.caption(f"课堂情绪: {comp_str}")
         show_stats()
     else:
-        st.info("👆 请上传一张包含多人的课堂图片")
+        st.markdown(
+            '<div class="empty-guide"><h2>📷 请上传课堂图片</h2>'
+            '<p>支持 JPG/PNG 格式，包含多人的课堂照片效果最佳</p></div>',
+            unsafe_allow_html=True)
 
 elif input_type == "🎬 上传视频":
     file = st.file_uploader("上传视频", type=["mp4", "avi", "mov"])
@@ -462,7 +536,10 @@ elif input_type == "🎬 上传视频":
                 else:
                     st.success("✅ 课堂整体状态正常，未触发预警")
     else:
-        st.info("👆 请上传一段课堂视频（≥1分钟），系统将进行时序分析")
+        st.markdown(
+            '<div class="empty-guide"><h2>🎬 请上传课堂视频</h2>'
+            '<p>支持 MP4/AVI/MOV 格式，≥1分钟视频可进行完整的时序分析和预警</p></div>',
+            unsafe_allow_html=True)
 
 elif input_type == "🎥 实时摄像头":
     analysis_sec = st.slider("⏱ 分析间隔(秒)", 1, 5, 2)
@@ -597,7 +674,8 @@ elif input_type == "🎥 实时摄像头":
                         comp = []
                     while len(disp) < len(faces):
                         disp.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
-                                    "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0, "Disgust": 0.0})
+                                    "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0,
+                                    "Disgust": 0.0, "Contempt": 0.0})
                     # 画框 + 复合情绪标签
                     for i, face in enumerate(faces):
                         x1, y1, x2, y2 = face.bbox
