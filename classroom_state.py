@@ -49,6 +49,7 @@ def classify_classroom_state(counts: dict, total: int,
     contempt = counts.get("Contempt", 0)
     fear = counts.get("Fear", 0)
     disgust = counts.get("Disgust", 0)
+    max_count = max(counts.values())
 
     # 规则1: 低头率过高 (>50%) → 需关注，优先级最高
     if head_up_rate < 0.50:
@@ -62,7 +63,6 @@ def classify_classroom_state(counts: dict, total: int,
     if (sad + angry + contempt) / total >= 0.40:
         return "课堂状态较低落或需要关注"
 
-    max_count = max(counts.values())
     if max_count == 0:
         return "未检测到学生"
 
