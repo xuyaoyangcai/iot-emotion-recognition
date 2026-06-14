@@ -362,18 +362,13 @@ elif input_type == "🎬 上传视频":
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps
 
-        # 2fps 采样：每半秒取一帧
-        frame_interval = max(1, int(fps / 2))
-        sampled = total_frames // frame_interval
-
-        st.info(f"视频: {duration:.0f}秒, {fps:.0f}fps, 采样 ~{sampled} 帧 (2fps)")
+        st.info(f"视频: {duration:.0f}秒, {fps:.0f}fps, 逐帧处理中 (处理速度决定播放速度)")
 
         bar = st.progress(0)
         slot_img = st.empty()
         slot_chart = st.empty()
         slot_status = st.empty()
 
-        n = 0       # 已读总帧数
         processed = 0  # 已处理帧数
         frame_data = []  # 积累的 PerFrameResult
 
@@ -386,15 +381,11 @@ elif input_type == "🎬 上传视频":
             ok, frame = cap.read()
             if not ok:
                 break
-            n += 1
-            if (n - 1) % frame_interval != 0:
-                continue
-
             processed += 1
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
 
-            elapsed = processed * (frame_interval / fps)
+            elapsed = processed / fps
 
             per_frame = aggregate_per_frame(
                 emotions, processed, elapsed,
@@ -418,7 +409,7 @@ elif input_type == "🎬 上传视频":
             result = render_result(rgb, faces, emotions, composite_emotions)
             slot_img.image(result, use_container_width=True)
             slot_status.markdown(
-                f"**帧 {processed}/{sampled}** | 检测: {per_frame.total_faces}人 | "
+                f"**帧 {processed}/{total_frames}** ({elapsed:.0f}s/{duration:.0f}s) | 检测: {per_frame.total_faces}人 | "
                 f"抬头率: {per_frame.head_up_rate*100:.0f}% | "
                 f"课堂状态: {per_frame.classroom_state} | "
                 f"预警: {level_emoji} {warning_level} "
@@ -431,11 +422,11 @@ elif input_type == "🎬 上传视频":
                 with slot_chart.container():
                     show_time_series_chart(key_suffix=f"live_{processed}")
 
-            bar.progress(min(n / total_frames, 1.0))
+            bar.progress(min(processed / total_frames, 1.0))
 
         cap.release()
         bar.empty()
-        st.success(f"处理完成! 共 {processed} 帧")
+        st.success(f"处理完成! 共 {processed}/{total_frames} 帧")
 
         # 最终时序图
         st.markdown("---")
