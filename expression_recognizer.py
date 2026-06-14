@@ -1,5 +1,6 @@
 import os
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+# 默认允许在线下载；国内用户设置 HF_ENDPOINT=https://hf-mirror.com 加速
+# 离线使用：设置环境变量 HF_HUB_OFFLINE=1
 
 import cv2
 import numpy as np
@@ -9,15 +10,20 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
 
-_LABEL_MAP = {
-    "angry": "Angry", "disgust": "Disgust", "fear": "Fear",
-    "happy": "Happy", "sad": "Sad", "surprise": "Surprise", "neutral": "Neutral",
-}
+_LABEL_MAPS = [
+    {  # dima806
+        "angry": "Angry", "disgust": "Disgust", "fear": "Fear",
+        "happy": "Happy", "sad": "Sad", "surprise": "Surprise", "neutral": "Neutral",
+    },
+    {  # mo-thecreator (same labels, but map defensively)
+        "angry": "Angry", "disgust": "Disgust", "fear": "Fear",
+        "happy": "Happy", "sad": "Sad", "surprise": "Surprise", "neutral": "Neutral",
+    },
+]
 
 
 def _augment_variants(face_img: np.ndarray) -> list[Image.Image]:
-    """生成 TTA 变体 (5个：原图+翻转+旋转+亮度)"""
-    h, w = face_img.shape[:2]
+    """TTA 变体 (5个：原图+翻转+旋转+亮度)"""
     pil_img = Image.fromarray(face_img)
     variants = [pil_img]
     variants.append(pil_img.transpose(Image.FLIP_LEFT_RIGHT))
@@ -30,91 +36,113 @@ def _augment_variants(face_img: np.ndarray) -> list[Image.Image]:
 
 
 class ExpressionRecognizer:
-    def __init__(self, model_name: str = "dima806/facial_emotions_image_detection",
-                 device: int = 0):
+    """双模型集成：dima806 + mo-thecreator ViT，平均概率互相纠偏"""
+
+    _MODEL_NAMES = [
+        "dima806/facial_emotions_image_detection",
+        "mo-thecreator/vit-Facial-Expression-Recognition",
+    ]
+
+    def __init__(self, device: int = 0):
         _device = device if torch.cuda.is_available() else -1
         self._device = torch.device(f"cuda:{_device}" if _device >= 0 else "cpu")
-        self._processor = AutoImageProcessor.from_pretrained(model_name)
-        self._model = AutoModelForImageClassification.from_pretrained(model_name)
-        self._model.to(self._device)
-        self._model.eval()
-        self._id2label = self._model.config.id2label
+        self._models = []
+        self._processors = []
+        self._id2labels = []
+
+        for name in self._MODEL_NAMES:
+            proc = AutoImageProcessor.from_pretrained(name)
+            model = AutoModelForImageClassification.from_pretrained(name)
+            model.to(self._device)
+            model.eval()
+            self._processors.append(proc)
+            self._models.append(model)
+            self._id2labels.append(model.config.id2label)
 
     def recognize(self, face_img: np.ndarray, head_status: str = None) -> dict[str, float]:
-        """TTA 批处理：所有变体一次性送入 GPU，充分打满显卡"""
+        """双模型集成推理：两个模型各自TTA，平均所有概率"""
         variants = _augment_variants(face_img)
+        all_probs = []  # 收集每个模型的概率
 
-        # 批量预处理 → GPU tensor
-        inputs = self._processor(images=variants, return_tensors="pt")
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        for proc, model, id2label, label_map in zip(
+            self._processors, self._models, self._id2labels, _LABEL_MAPS
+        ):
+            inputs = proc(images=variants, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        with torch.no_grad():
-            outputs = self._model(**inputs)
-            logits = outputs.logits  # (N, num_classes)
-            probs = torch.softmax(logits, dim=-1)
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits = outputs.logits
+                probs_tensor = torch.softmax(logits, dim=-1)
 
-        # 聚合所有变体的预测
-        avg_probs = probs.mean(dim=0)  # (num_classes,)
-        accumulated = {self._id2label[i].capitalize(): avg_probs[i].item()
-                       for i in range(len(avg_probs))}
-        # 映射标签
+            avg_probs = probs_tensor.mean(dim=0)
+            accumulated = {id2label[i].capitalize(): avg_probs[i].item()
+                          for i in range(len(avg_probs))}
+
+            model_probs = {}
+            for label, score in accumulated.items():
+                key = label_map.get(label.lower(), label)
+                model_probs[key] = score
+
+            total = sum(model_probs.values())
+            if total > 0:
+                model_probs = {k: v / total for k, v in model_probs.items()}
+            all_probs.append(model_probs)
+
+        # 两个模型平均
         probs = {}
-        for label, score in accumulated.items():
-            key = _LABEL_MAP.get(label.lower(), label)
-            probs[key] = score
+        all_keys = set()
+        for mp in all_probs:
+            all_keys.update(mp.keys())
+        for k in all_keys:
+            vals = [mp.get(k, 0.0) for mp in all_probs]
+            probs[k] = sum(vals) / len(vals)
 
         total = sum(probs.values())
         if total == 0:
             return {e: 0.0 for e in EMOTIONS}
         probs = {k: v / total for k, v in probs.items()}
 
-        # 温度缩放（温和，避免过度放大微小差异）
-        t = 0.55
+        # 温和温度缩放（集成后偏差已减小，用更温和的 T）
+        t = 0.65
         probs = {k: v ** (1.0 / t) for k, v in probs.items()}
         total = sum(probs.values())
         probs = {k: v / total for k, v in probs.items()}
 
-        # Neutral / Sad 过触发压制
+        # Neutral 压制（集成后大幅减弱）
         top = max(probs, key=probs.get)
         sorted_items = sorted(probs.items(), key=lambda x: x[1], reverse=True)
         neutral_val = probs.get("Neutral", 0)
-        sad_val = probs.get("Sad", 0)
-        runner_up = sorted_items[1][0] if sorted_items[0][0] == "Neutral" else sorted_items[0][0]
-
         if top == "Neutral":
             gap = sorted_items[0][1] - sorted_items[1][1]
-            if gap < 0.10:
-                probs["Neutral"] *= 0.35
-                probs[runner_up] *= 1.15
-            elif neutral_val < 0.40:
-                probs["Neutral"] *= 0.45
+            if gap < 0.08:
+                probs["Neutral"] *= 0.50
+                runner_up = sorted_items[1][0]
                 probs[runner_up] *= 1.10
-            elif neutral_val < 0.50:
-                probs["Neutral"] *= 0.55
-                probs[runner_up] *= 1.05
-        elif neutral_val > 0.25:
-            probs["Neutral"] *= 0.75
+            elif neutral_val < 0.45:
+                probs["Neutral"] *= 0.60
+                runner_up = sorted_items[1][0]
+                probs[runner_up] *= 1.08
+        elif neutral_val > 0.30:
+            probs["Neutral"] *= 0.80
 
-        # Sad 系统性偏置修正：该模型天然偏向 Sad
-        # 课堂场景下真正的悲伤表情极为罕见，中性/专注脸常被误判
+        # Sad 偏置修正（集成后温和很多）
         sad_val = probs.get("Sad", 0)
-        if sad_val > 0.15:
-            if top == "Sad" and sad_val > 0.50:
-                gap = sorted_items[0][1] - sorted_items[1][1]
-                if gap > 0.30:
-                    # 模型极度自信 Sad → 转移概率到 Neutral
-                    transfer = sad_val * 0.70
-                    probs["Sad"] -= transfer
-                    probs["Neutral"] = probs.get("Neutral", 0) + transfer * 0.7
-                    probs["Happy"] = probs.get("Happy", 0) + transfer * 0.3
-                else:
-                    probs["Sad"] *= 0.40
-            elif top == "Sad":
-                probs["Sad"] *= 0.50
+        if top == "Sad" and sad_val > 0.50:
+            gap = sorted_items[0][1] - sorted_items[1][1]
+            if gap > 0.35:
+                transfer = sad_val * 0.50
+                probs["Sad"] -= transfer
+                probs["Neutral"] = probs.get("Neutral", 0) + transfer * 0.6
+                probs["Happy"] = probs.get("Happy", 0) + transfer * 0.4
             else:
-                probs["Sad"] *= 0.65
+                probs["Sad"] *= 0.55
+        elif top == "Sad":
+            probs["Sad"] *= 0.65
+        elif sad_val > 0.15:
+            probs["Sad"] *= 0.75
 
-        # 头姿态上下文：课堂低头=看书/写字，不关联 Sad
+        # 头姿态上下文
         if head_status == "抬头":
             probs["Happy"] = probs.get("Happy", 0) * 1.05
             probs["Surprise"] = probs.get("Surprise", 0) * 1.05
