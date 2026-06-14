@@ -49,6 +49,13 @@ def detect_faces(image: np.ndarray) -> list[Face]:
     else:
         bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
+    # 图像增强：轻微锐化 + 对比度，改善模糊/低码率视频的人脸轮廓
+    kernel = np.array([[0, -0.3, 0],
+                       [-0.3, 2.2, -0.3],
+                       [0, -0.3, 0]], dtype=np.float32)
+    bgr = cv2.filter2D(bgr, -1, kernel)
+    bgr = cv2.convertScaleAbs(bgr, alpha=1.08, beta=3)
+
     detector = _get_detector()
 
     # 只有超宽全景图(>2500px)才分块检测，普通图片全图检测效果更好
@@ -73,7 +80,7 @@ def detect_faces(image: np.ndarray) -> list[Face]:
                         bx, by = int(det[0]) + x0, int(det[1]) + y0
                         bw, bh = det[2], det[3]
                         conf = float(det[14])
-                        if bw < 12 or bh < 12:
+                        if bw < 10 or bh < 10:
                             continue
                         lms = np.array([
                             [det[4]+x0, det[5]+y0],
@@ -112,7 +119,7 @@ def detect_faces(image: np.ndarray) -> list[Face]:
                 y1 = int(det[1])
                 bw, bh = det[2], det[3]
                 conf = float(det[14])
-                if bw < 15 or bh < 15:
+                if bw < 10 or bh < 10:
                     continue
                 landmarks = np.array([
                     [det[4], det[5]], [det[6], det[7]], [det[8], det[9]],
