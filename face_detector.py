@@ -51,14 +51,14 @@ def detect_faces(image: np.ndarray) -> list[Face]:
 
     detector = _get_detector()
 
-    # 只有超宽全景图(>1500px)才分块检测，普通图片全图检测效果更好
+    # 只有超宽全景图(>2500px)才分块检测，普通图片全图检测效果更好
     TILE = 640
-    if w > 1500:
+    if w > 2500:
         faces_raw = []
         overlap = int(TILE * 0.2)
         step = TILE - overlap
         x_starts = list(range(0, w - TILE, step)) + [max(0, w - TILE)]
-        y_starts = list(range(0, h - TILE, step)) if h > 1500 else [0]
+        y_starts = list(range(0, h - TILE, step)) if h > 2500 else [0]
 
         for y0 in y_starts:
             y1 = min(h, y0 + TILE)
@@ -88,7 +88,7 @@ def detect_faces(image: np.ndarray) -> list[Face]:
         if faces_raw:
             boxes = np.array([[f[0], f[1], f[0]+f[2], f[1]+f[3]] for f in faces_raw], dtype=np.float32)
             scores = np.array([f[4] for f in faces_raw], dtype=np.float32)
-            indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), 0.30, 0.3)
+            indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), 0.30, 0.6)
             if len(indices) > 0:
                 faces_raw = [faces_raw[i] for i in indices.flatten()]
 
