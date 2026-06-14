@@ -51,14 +51,14 @@ def detect_faces(image: np.ndarray) -> list[Face]:
 
     detector = _get_detector()
 
-    # 宽图/全景 → 分块检测（每块 640px，20% 重叠），小人脸也能抓到
+    # 只有超宽全景图(>1500px)才分块检测，普通图片全图检测效果更好
     TILE = 640
-    if w > TILE + 100:
+    if w > 1500:
         faces_raw = []
         overlap = int(TILE * 0.2)
         step = TILE - overlap
         x_starts = list(range(0, w - TILE, step)) + [max(0, w - TILE)]
-        y_starts = list(range(0, h - TILE, step)) if h > TILE + 100 else [0]
+        y_starts = list(range(0, h - TILE, step)) if h > 1500 else [0]
 
         for y0 in y_starts:
             y1 = min(h, y0 + TILE)
