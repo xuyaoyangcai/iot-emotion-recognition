@@ -12,11 +12,11 @@ EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
 
 _LABEL_MAPS = [
     {  # dima806
-        "angry": "Angry", "disgust": "Disgust", "fear": "Fear",
+        "angry": "Angry", "anger": "Angry", "disgust": "Disgust", "fear": "Fear",
         "happy": "Happy", "sad": "Sad", "surprise": "Surprise", "neutral": "Neutral",
     },
-    {  # mo-thecreator (same labels, but map defensively)
-        "angry": "Angry", "disgust": "Disgust", "fear": "Fear",
+    {  # mo-thecreator
+        "angry": "Angry", "anger": "Angry", "disgust": "Disgust", "fear": "Fear",
         "happy": "Happy", "sad": "Sad", "surprise": "Surprise", "neutral": "Neutral",
     },
 ]
