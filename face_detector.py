@@ -96,10 +96,10 @@ def detect_faces(image: np.ndarray) -> list[Face]:
         for bx, by, bw, bh, conf, lms in faces_raw:
             pad_w = int(bw * 0.15)
             pad_h = int(bh * 0.15)
-            x1 = max(0, bx - pad_w)
-            y1 = max(0, by - pad_h)
-            x2 = min(w, bx + bw + pad_w)
-            y2 = min(h, by + bh + pad_h)
+            x1 = int(max(0, bx - pad_w))
+            y1 = int(max(0, by - pad_h))
+            x2 = int(min(w, bx + bw + pad_w))
+            y2 = int(min(h, by + bh + pad_h))
             faces.append(Face(bbox=(x1, y1, x2, y2), confidence=conf, landmarks=lms))
     else:
         # 窄图直接全图检测
@@ -120,8 +120,8 @@ def detect_faces(image: np.ndarray) -> list[Face]:
                 ], dtype=np.float64)
                 pad_w = int(bw * 0.15)
                 pad_h = int(bh * 0.15)
-                x1 = max(0, x1 - pad_w)
-                y1 = max(0, y1 - pad_h)
+                x1 = int(max(0, x1 - pad_w))
+                y1 = int(max(0, y1 - pad_h))
                 x2 = min(w, int(det[0] + bw + pad_w))
                 y2 = min(h, int(det[1] + bh + pad_h))
                 faces.append(Face(bbox=(x1, y1, x2, y2), confidence=conf, landmarks=landmarks))
