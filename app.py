@@ -465,12 +465,21 @@ elif input_type == "🎬 上传视频":
         # ── 顶部控制栏 ──
         ctl1, ctl2, ctl3 = st.columns([3, 1, 1])
         pct = vs["processed"] / max(vs["total_frames"], 1) * 100
+        finished = vs["processed"] >= vs["total_frames"]
         with ctl1:
             elapsed_s = vs["processed"] / vs["fps"]
             st.markdown(f"🎬 **{vs['file_name']}** | {vs['fps']:.0f}fps | 进度 {elapsed_s:.0f}s/{duration:.0f}s ({pct:.0f}%)")
         with ctl2:
-            if st.button("⏹ 停止处理", use_container_width=True, key="vid_stop", type="primary"):
-                vs["running"] = False
+            if finished:
+                st.button("✅ 已完成", use_container_width=True, key="vid_done", disabled=True)
+            elif vs["running"]:
+                if st.button("⏹ 停止处理", use_container_width=True, key="vid_stop", type="primary"):
+                    vs["running"] = False
+                    st.rerun()
+            else:
+                if st.button("▶ 继续处理", use_container_width=True, key="vid_resume", type="primary"):
+                    vs["running"] = True
+                    st.rerun()
         with ctl3:
             if st.button("🔄 重置", use_container_width=True, key="vid_reset"):
                 vs["running"] = False
