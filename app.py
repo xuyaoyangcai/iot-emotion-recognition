@@ -433,8 +433,6 @@ if input_type == "📷 上传图片":
 elif input_type == "🎬 上传视频":
     file = st.file_uploader("上传视频", type=["mp4", "avi", "mov"])
     if file:
-        analysis_sec = st.slider("⏱ 分析间隔(秒)", 1, 5, 2, key="vid_interval")
-
         # 判断是否新文件
         is_new = ("vid_state" not in st.session_state
                   or st.session_state.vid_state.get("file_name") != file.name)
@@ -519,14 +517,11 @@ elif input_type == "🎬 上传视频":
             cap = cv2.VideoCapture(vs["tmp"])
             cap.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"])
 
-            # 每批读 analysis_sec 秒的帧，全部正常过一遍，但只分析其中1帧
-            batch_frames = max(1, int(vs["fps"] * analysis_sec))
-            # 分析点：取这批中间那帧
-            analyze_at = batch_frames // 2
+            # 逐帧全分析，每批 10 帧后刷新 UI（保证停止按钮响应）
+            batch_size = 10
             last_display = None
-            analyzed_this_batch = False
 
-            for i in range(batch_frames):
+            for _ in range(batch_size):
                 ok, frame = cap.read()
                 if not ok:
                     vs["running"] = False
@@ -534,33 +529,26 @@ elif input_type == "🎬 上传视频":
                 vs["processed"] += 1
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
+                last_display = render_result(rgb, faces, emotions, composite_emotions)
 
-                # 分析：每批只跑一次
-                if i == analyze_at and not analyzed_this_batch:
-                    faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
-                    last_display = render_result(rgb, faces, emotions, composite_emotions)
-                    elapsed = vs["processed"] / vs["fps"]
-
-                    per_frame = aggregate_per_frame(
-                        emotions, vs["processed"], elapsed,
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        file.name,
-                    )
-                    _hp = head_up + head_down
-                    per_frame.head_up_count = head_up
-                    per_frame.head_down_count = head_down
-                    per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-                    per_frame.classroom_state = _classify(per_frame)
-                    analyzer.add_frame_record(per_frame)
-                    save_records(faces, emotions, file.name)
-                    tracker_local.feed(per_frame.classroom_state)
-                    analyzed_this_batch = True
-                elif last_display is None:
-                    last_display = rgb
+                elapsed = vs["processed"] / vs["fps"]
+                per_frame = aggregate_per_frame(
+                    emotions, vs["processed"], elapsed,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    file.name,
+                )
+                _hp = head_up + head_down
+                per_frame.head_up_count = head_up
+                per_frame.head_down_count = head_down
+                per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
+                per_frame.classroom_state = _classify(per_frame)
+                analyzer.add_frame_record(per_frame)
+                save_records(faces, emotions, file.name)
+                tracker_local.feed(per_frame.classroom_state)
 
             cap.release()
 
-            # 缓存显示图，下次渲染时先用这张图占位避免闪烁
             if last_display is not None:
                 st.session_state.vid_display = last_display
 
