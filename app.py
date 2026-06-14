@@ -558,6 +558,9 @@ elif input_type == "🎬 上传视频":
                 elif last_display is None:
                     # 还没分析时，显示原始帧
                     last_display = rgb
+                else:
+                    # 分析之后继续更新显示画面（保持视频在动），但只显示原始帧节省时间
+                    last_display = rgb
 
             cap.release()
 
