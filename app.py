@@ -294,7 +294,10 @@ def show_stats():
     if analyzer.records:
         st.markdown("---")
         st.subheader("检测记录")
-        st.dataframe(pd.DataFrame(analyzer.records), use_container_width=True, height=200)
+        try:
+            st.dataframe(pd.DataFrame(analyzer.records), use_container_width=True, height=200)
+        except ValueError:
+            st.dataframe(pd.DataFrame.from_records(analyzer.records), use_container_width=True, height=200)
 
 
 def show_time_series_chart(key_suffix: str = ""):
@@ -450,8 +453,8 @@ elif input_type == "🎬 上传视频":
         processed = 0  # 已处理帧数
         frame_data = []  # 积累的 PerFrameResult
 
-        # 清空之前的帧记录和 tracker
-        analyzer.frame_records.clear()
+        # 清空之前的记录和 tracker
+        analyzer.clear()
         st.session_state.warning_tracker = WarningTracker()
         tracker_local = st.session_state.warning_tracker
 
