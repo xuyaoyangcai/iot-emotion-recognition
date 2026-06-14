@@ -62,15 +62,15 @@ def classify_classroom_state(counts: dict, total: int,
     if (sad + angry + contempt) / total >= 0.40:
         return "课堂状态较低落或需要关注"
 
-    # 规则4: Contempt 占比最高 → 注意力波动（轻蔑/不屑）
-    if contempt == max_count and contempt > 0:
-        return "课堂注意力波动较大"
-
     max_count = max(counts.values())
     if max_count == 0:
         return "未检测到学生"
 
-    # 规则4: Surprise 占比最高 → 注意力波动
+    # 规则4: Contempt 占比最高 → 注意力波动（轻蔑/不屑）
+    if contempt == max_count and contempt > 0:
+        return "课堂注意力波动较大"
+
+    # 规则5: Surprise 占比最高 → 注意力波动
     if surprise == max_count:
         for emo in EMOTIONS:
             if emo != "Surprise" and counts.get(emo, 0) == max_count:
@@ -78,7 +78,7 @@ def classify_classroom_state(counts: dict, total: int,
         else:
             return "课堂注意力波动较大"
 
-    # 规则5: Neutral 占比最高 → 平稳
+    # 规则6: Neutral 占比最高 → 平稳
     if neutral == max_count:
         return "课堂状态平稳"
 
