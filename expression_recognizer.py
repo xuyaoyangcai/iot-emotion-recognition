@@ -60,10 +60,10 @@ class ExpressionRecognizer:
 
         for name, use_vit in self._MODEL_SPECS:
             if use_vit:
-                proc = ViTImageProcessor.from_pretrained(name)
+                proc = ViTImageProcessor.from_pretrained(name, local_files_only=True)
             else:
-                proc = AutoImageProcessor.from_pretrained(name)
-            model = AutoModelForImageClassification.from_pretrained(name)
+                proc = AutoImageProcessor.from_pretrained(name, local_files_only=True)
+            model = AutoModelForImageClassification.from_pretrained(name, local_files_only=True)
             model.to(self._device)
             model.eval()
             self._processors.append(proc)
