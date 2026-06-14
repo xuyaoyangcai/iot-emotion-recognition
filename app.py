@@ -498,23 +498,24 @@ elif input_type == "🎬 上传视频":
         slot_chart = col_chart.empty()
 
         if vs["running"]:
-            # 每批处理 8 帧
             cap = cv2.VideoCapture(vs["tmp"])
             cap.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"])
 
-            batch_size = 8
+            batch_size = 25
             last_per_frame = None
-            batch_processed = 0
+            last_result = None
             for _ in range(batch_size):
                 ok, frame = cap.read()
                 if not ok:
                     vs["running"] = False
                     break
                 vs["processed"] += 1
-                batch_processed += 1
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
+
+                # 保存渲染结果用于显示（避免重复处理）
+                last_result = render_result(rgb, faces, emotions, composite_emotions)
 
                 elapsed = vs["processed"] / vs["fps"]
 
@@ -535,17 +536,9 @@ elif input_type == "🎬 上传视频":
 
             cap.release()
 
-            # 显示最新帧 + 时序图
-            if last_per_frame is not None:
-                cap2 = cv2.VideoCapture(vs["tmp"])
-                cap2.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"] - 1)
-                ok, show_frame = cap2.read()
-                cap2.release()
-                if ok:
-                    show_rgb = cv2.cvtColor(show_frame, cv2.COLOR_BGR2RGB)
-                    faces2, emo2, _, _, comp2 = process_frame(show_rgb)
-                    result = render_result(show_rgb, faces2, emo2, comp2)
-                    slot_img.image(result, use_container_width=True)
+            # 直接显示已保存的渲染结果（无需重新读帧/重新识别）
+            if last_result is not None:
+                slot_img.image(last_result, use_container_width=True)
 
             with slot_chart.container():
                 if len(analyzer.frame_records) >= 2:
