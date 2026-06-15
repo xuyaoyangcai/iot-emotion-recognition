@@ -455,6 +455,9 @@ elif input_type == "🎬 上传视频":
                 "total_frames": total_frames,
                 "processed": 0,
                 "running": True,
+                "last_emotions": [],
+                "last_composite": [],
+                "last_analysis_frame": -999,
             }
             st.session_state.vid_display = None
 
@@ -463,13 +466,17 @@ elif input_type == "🎬 上传视频":
         tracker_local = st.session_state.warning_tracker
 
         # ── 顶部控制栏 ──
-        ctl1, ctl2, ctl3 = st.columns([3, 1, 1])
+        ctl1, ctl2, ctl3, ctl4 = st.columns([2.5, 1, 1, 1])
         pct = vs["processed"] / max(vs["total_frames"], 1) * 100
         finished = vs["processed"] >= vs["total_frames"]
         with ctl1:
             elapsed_s = vs["processed"] / vs["fps"]
             st.markdown(f"🎬 **{vs['file_name']}** | {vs['fps']:.0f}fps | 进度 {elapsed_s:.0f}s/{duration:.0f}s ({pct:.0f}%)")
         with ctl2:
+            analysis_sec = st.selectbox("分析间隔", [0.5, 1, 2, 3, 5], index=2,
+                                        key="vid_interval",
+                                        help="每隔多少秒做一次完整表情分析，其余帧仅做人脸检测保持流畅")
+        with ctl3:
             if finished:
                 st.button("✅ 已完成", use_container_width=True, key="vid_done", disabled=True)
             elif vs["running"]:
@@ -480,7 +487,7 @@ elif input_type == "🎬 上传视频":
                 if st.button("▶ 继续处理", use_container_width=True, key="vid_resume", type="primary"):
                     vs["running"] = True
                     st.rerun()
-        with ctl3:
+        with ctl4:
             if st.button("🔄 重置", use_container_width=True, key="vid_reset"):
                 vs["running"] = False
                 st.session_state.vid_display = None
@@ -526,7 +533,8 @@ elif input_type == "🎬 上传视频":
             cap = cv2.VideoCapture(vs["tmp"])
             cap.set(cv2.CAP_PROP_POS_FRAMES, vs["processed"])
 
-            # 逐帧全分析，每批 10 帧后刷新 UI（保证停止按钮响应）
+            analysis_interval = max(1, int(vs["fps"] * analysis_sec))
+            # 每批显示的帧数（仅做人脸检测，保证停止按钮响应）
             batch_size = 10
             last_display = None
 
@@ -538,23 +546,71 @@ elif input_type == "🎬 上传视频":
                 vs["processed"] += 1
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                faces, emotions, head_up, head_down, composite_emotions = process_frame(rgb)
-                last_display = render_result(rgb, faces, emotions, composite_emotions)
 
-                elapsed = vs["processed"] / vs["fps"]
-                per_frame = aggregate_per_frame(
-                    emotions, vs["processed"], elapsed,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    file.name,
-                )
-                _hp = head_up + head_down
-                per_frame.head_up_count = head_up
-                per_frame.head_down_count = head_down
-                per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
-                per_frame.classroom_state = _classify(per_frame)
-                analyzer.add_frame_record(per_frame)
-                save_records(faces, emotions, file.name)
-                tracker_local.feed(per_frame.classroom_state)
+                # 每帧做人脸检测（轻量），保证框跟随人脸移动、画面流畅
+                faces = face_detector.detect_faces(rgb)
+                faces = [f for f in faces if f.confidence >= threshold]
+
+                # 每隔 analysis_interval 帧做一次完整分析（表情 + 头姿态 + 统计）
+                do_analysis = (vs["processed"] - vs.get("last_analysis_frame", -999)) >= analysis_interval
+
+                if do_analysis and faces:
+                    emotions = []
+                    composite_emotions = []
+                    head_up, head_down = 0, 0
+                    for face in faces:
+                        roi = face_detector.extract_face_roi(rgb, face)
+                        if roi.size == 0:
+                            continue
+                        try:
+                            try:
+                                pitch, yaw, _ = face_detector.estimate_head_pose(face, rgb.shape)
+                                far = face_detector.face_aspect_ratio(face)
+                                status = face_detector.classify_head_pose(pitch, face_ar=far)
+                            except Exception:
+                                pitch, yaw = 0.0, 0.0
+                                status = "正常"
+                            probs = st.session_state.recognizer.recognize(roi, head_status=status)
+                            emotions.append(probs)
+                            comp = classify_classroom_emotion(probs, yaw, pitch)
+                            comp_top = max(comp, key=comp.get) if comp else "N/A"
+                            composite_emotions.append({"scores": comp, "top": comp_top, "yaw": yaw, "pitch": pitch})
+                            if status == "低头":
+                                head_down += 1
+                            else:
+                                head_up += 1
+                        except Exception:
+                            continue
+
+                    vs["last_emotions"] = emotions
+                    vs["last_composite"] = composite_emotions
+                    vs["last_analysis_frame"] = vs["processed"]
+
+                    elapsed = vs["processed"] / vs["fps"]
+                    per_frame = aggregate_per_frame(
+                        emotions, vs["processed"], elapsed,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        file.name,
+                    )
+                    _hp = head_up + head_down
+                    per_frame.head_up_count = head_up
+                    per_frame.head_down_count = head_down
+                    per_frame.head_up_rate = round(head_up / _hp, 3) if _hp > 0 else 1.0
+                    per_frame.classroom_state = _classify(per_frame)
+                    analyzer.add_frame_record(per_frame)
+                    save_records(faces, emotions, file.name)
+                    tracker_local.feed(per_frame.classroom_state)
+                else:
+                    # 非分析帧：复用上次缓存的识别结果来标注人脸框
+                    emotions = list(vs.get("last_emotions", []))
+                    composite_emotions = list(vs.get("last_composite", []))
+                    # 如果缓存表情不够（首次、或人脸数变了），用 Neutral 补齐
+                    while len(emotions) < len(faces):
+                        emotions.append({"Neutral": 1.0, "Happy": 0.0, "Sad": 0.0,
+                                         "Angry": 0.0, "Surprise": 0.0, "Fear": 0.0,
+                                         "Disgust": 0.0, "Contempt": 0.0})
+
+                last_display = render_result(rgb, faces, emotions, composite_emotions)
 
             cap.release()
 
@@ -790,18 +846,35 @@ elif input_type == "🎥 实时摄像头":
             except Exception:
                 return frame
 
-    webrtc_streamer(
+    ctx = webrtc_streamer(
         key="cam-webrtc",
         mode=WebRtcMode.SENDRECV,
         video_processor_factory=CamProcessor,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
     )
+    st.session_state.cam_active = ctx.state.playing
 
     # 统计面板放在 fragment 中，每2秒自动刷新，不影响视频流
     @st.fragment(run_every=2)
     def _cam_stats_panel():
         result_queue = st.session_state.cam_result_queue
+        cam_active = st.session_state.get("cam_active", False)
+
+        if not cam_active:
+            # 摄像头已停止：清空队列残留，不再新增分析记录
+            while not result_queue.empty():
+                try:
+                    result_queue.get_nowait()
+                except queue.Empty:
+                    break
+            if analyzer.frame_records:
+                show_status_bar()
+                show_stats()
+                if len(analyzer.frame_records) >= 3:
+                    show_time_series_chart(key_suffix="cam")
+            return
+
         processed = 0
         while not result_queue.empty() and processed < 10:
             try:
