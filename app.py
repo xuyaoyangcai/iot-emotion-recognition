@@ -25,8 +25,7 @@ import face_detector
 from expression_recognizer import ExpressionRecognizer, EMOTIONS
 from analyzer import ResultAnalyzer
 from utils import (
-    draw_face_boxes, apply_mood_filter,
-    make_emoji_overlay, EMOTION_COLORS, CLASSROOM_STATE_COLORS,
+    draw_face_boxes, EMOTION_COLORS, CLASSROOM_STATE_COLORS,
     COMPOSITE_EMOTION_COLORS, COMPOSITE_EMOTION_EMOJI,
 )
 from gaze_emotion import classify_classroom_emotion, top_classroom_emotion, CLASSROOM_EMOTIONS
@@ -102,14 +101,14 @@ if "warning_tracker" not in st.session_state:
 analyzer = st.session_state.analyzer
 tracker = st.session_state.warning_tracker
 
-# ── 侧边栏（仅模式选择）──
+# ── 侧边栏 ──
 with st.sidebar:
     st.title("🏫 课堂状态分析")
-    mode = st.radio("显示模式", ["📊 仪表盘模式", "🪞 魔镜模式"], label_visibility="collapsed")
-    st.markdown("---")
     input_type = st.radio("输入来源", ["📷 上传图片", "🎬 上传视频", "🎥 实时摄像头"], label_visibility="collapsed")
     st.markdown("---")
     threshold = st.slider("检测阈值", 0.3, 0.9, 0.4, 0.05)
+    st.markdown("---")
+    show_intro = st.checkbox("📖 显示系统简介", value=False)
 
 def _classify(per_frame):
     """课堂状态分类，传入抬头率"""
@@ -165,44 +164,32 @@ def save_records(faces, emotions, source):
 
 
 def render_result(image, faces, emotions, composite_emotions=None):
-    if mode == "🪞 魔镜模式":
-        result = image.copy()
-        for face, probs in zip(faces, emotions):
-            top = max(probs, key=probs.get)
-            result = apply_mood_filter(result, top)
-            result = make_emoji_overlay(result, face, top)
-        return result
-    else:
-        # 仪表盘模式 — 画基本表情框 + 复合情绪标签
-        img = image.copy()
-        comp_list = composite_emotions or []
-        for i, (face, probs) in enumerate(zip(faces, emotions)):
-            x1, y1, x2, y2 = face.bbox
-            top_emo = max(probs, key=probs.get)
-            color = EMOTION_COLORS.get(top_emo, (0, 255, 0))
+    img = image.copy()
+    comp_list = composite_emotions or []
+    for i, (face, probs) in enumerate(zip(faces, emotions)):
+        x1, y1, x2, y2 = face.bbox
+        top_emo = max(probs, key=probs.get)
+        color = EMOTION_COLORS.get(top_emo, (0, 255, 0))
 
-            # 画人脸框
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
 
-            # 第一行：基础表情
-            label1 = f"{top_emo} ({face.confidence:.0%})"
-            (tw, th), _ = cv2.getTextSize(label1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-            cv2.rectangle(img, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
-            cv2.putText(img, label1, (x1 + 2, y1 - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+        label1 = f"{top_emo} ({face.confidence:.0%})"
+        (tw, th), _ = cv2.getTextSize(label1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+        cv2.rectangle(img, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
+        cv2.putText(img, label1, (x1 + 2, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
-            # 第二行：复合情绪（上方，留足间距不遮挡基础表情）
-            if i < len(comp_list) and comp_list[i]["top"] != "N/A":
-                comp_top = comp_list[i]["top"]
-                comp_color = COMPOSITE_EMOTION_COLORS.get(comp_top, (0, 255, 0))
-                label2 = f"{comp_top}"
-                (tw2, th2), _ = cv2.getTextSize(label2, cv2.FONT_HERSHEY_DUPLEX, 0.55, 2)
-                gap = th + 14
-                cv2.rectangle(img, (x1, y1 - gap - th2 - 6), (x1 + tw2 + 6, y1 - gap),
-                            comp_color, -1)
-                cv2.putText(img, label2, (x1 + 3, y1 - gap - 2),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.55, (255, 255, 255), 2)
-        return img
+        if i < len(comp_list) and comp_list[i]["top"] != "N/A":
+            comp_top = comp_list[i]["top"]
+            comp_color = COMPOSITE_EMOTION_COLORS.get(comp_top, (0, 255, 0))
+            label2 = f"{comp_top}"
+            (tw2, th2), _ = cv2.getTextSize(label2, cv2.FONT_HERSHEY_DUPLEX, 0.55, 2)
+            gap = th + 14
+            cv2.rectangle(img, (x1, y1 - gap - th2 - 6), (x1 + tw2 + 6, y1 - gap),
+                        comp_color, -1)
+            cv2.putText(img, label2, (x1 + 3, y1 - gap - 2),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.55, (255, 255, 255), 2)
+    return img
 
 
 def show_status_bar():
@@ -390,6 +377,100 @@ def show_time_series_chart(key_suffix: str = ""):
 # ── 主界面 ──
 st.title("🏫 基于表情识别的课堂状态分析系统")
 st.caption("多人人脸检测与表情识别的课堂状态分析")
+
+if show_intro:
+    tab1, tab2, tab3, tab4 = st.tabs(["基础表情", "学生状态", "课堂状态判断", "预警规则"])
+
+    with tab1:
+        st.subheader("系统可识别的 8 种基本表情")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown("**😊 Happy 开心**\n\n愉悦、满意")
+        c2.markdown("**😐 Neutral 平静**\n\n无表情、正常")
+        c3.markdown("**😢 Sad 悲伤**\n\n低落、难过")
+        c4.markdown("**😡 Angry 生气**\n\n不满、愤怒")
+        c1.markdown("**😲 Surprise 惊讶**\n\n意外、吃惊")
+        c2.markdown("**😨 Fear 害怕**\n\n紧张、恐惧")
+        c3.markdown("**🤢 Disgust 厌恶**\n\n反感、嫌弃")
+        c4.markdown("**😏 Contempt 轻蔑**\n\n不屑、无聊")
+        st.info("系统通过摄像头画面分析每张人脸，输出以上 8 种表情的概率分布")
+
+    with tab2:
+        st.subheader("综合基础表情和头部姿态推导出 8 种学生个人状态")
+        data = [
+            ["🎯 Focused 专注",    "Happy / Neutral",   "面朝前方",   "正在认真听讲"],
+            ["🙋 Engaged 投入",    "Happy",             "面朝前方",   "积极互动、理解内容"],
+            ["💭 Thinking 思考",   "Neutral / Sad",     "低头",      "做笔记、做题、思考"],
+            ["😴 Tired 困倦",      "Sad",               "低头",      "打瞌睡、精神状态差"],
+            ["🥱 Bored 走神",      "Neutral / Contempt", "低头",      "玩手机、发呆、不想听"],
+            ["👀 Distracted 分心", "Neutral / Sad",      "大幅偏头",  "看窗外、和同学说话"],
+            ["🤔 Confused 困惑",   "Surprise / Fear",    "头部微偏",  "听不懂、有疑问"],
+            ["😰 Anxious 焦虑",    "Fear / Sad",         "频繁转头",  "考试/提问时紧张"],
+        ]
+        st.dataframe(
+            data, use_container_width=True, hide_index=True,
+            column_config={
+                "0": st.column_config.TextColumn("状态"),
+                "1": st.column_config.TextColumn("伴随表情"),
+                "2": st.column_config.TextColumn("头部动作"),
+                "3": st.column_config.TextColumn("课堂含义"),
+            }
+        )
+        st.info("关键区分：同样是低头，表情平静 = 在思考做题，表情悲伤 = 困了打瞌睡，表情轻蔑 = 无聊走神")
+
+    with tab3:
+        st.subheader("统计全班学生状态，按优先级判断整体课堂氛围")
+        rules = [
+            ["① 大面积低头", "抬头率 < 50%", "需要关注 ⚠️"],
+            ["② 积极健康", "(Happy + Neutral) / 总数 ≥ 70% 且 抬头率 ≥ 60%", "状态良好 ✅"],
+            ["③ 负面情绪多", "(Sad + Angry + Contempt) / 总数 ≥ 40%", "需要关注 ⚠️"],
+            ["④ Contempt 突出", "Contempt 是唯一人数最多的表情", "注意力波动 📈"],
+            ["⑤ Surprise 突出", "Surprise 是唯一人数最多的表情", "注意力波动 📈"],
+            ["⑥ 平静为主", "Neutral 是人数最多的表情", "状态平稳 ➡️"],
+            ["⑦ 其他情况", "—", "状态平稳 ➡️"],
+        ]
+        st.dataframe(
+            rules, use_container_width=True, hide_index=True,
+            column_config={
+                "0": st.column_config.TextColumn("判断条件"),
+                "1": st.column_config.TextColumn("具体规则"),
+                "2": st.column_config.TextColumn("课堂状态"),
+            }
+        )
+
+    with tab4:
+        st.subheader("不只判断单帧，还跟踪时间趋势变化")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**📊 滑动窗口预警**\n（5帧为一个窗口，逐帧滑动）")
+            trends = [
+                ["🟢 Green", "(Happy + Neutral) > 60%\n且 抬头率 > 70%"],
+                ["🟡 Yellow", "Neutral > 60%\n或 Neutral > 55% 且 抬头率 < 70%"],
+                ["🔴 Red", "抬头率 < 40%\n或 (Sad+Angry+Fear+Contempt) > 40%"],
+            ]
+            st.dataframe(
+                trends, use_container_width=True, hide_index=True,
+                column_config={
+                    "0": st.column_config.TextColumn("等级"),
+                    "1": st.column_config.TextColumn("触发条件"),
+                }
+            )
+        with c2:
+            st.markdown("**⏱ 连续帧追踪预警**\n（累积连续同类帧数）")
+            tracks = [
+                ["🟢 Green", "连续 ≥ 4 帧状态良好"],
+                ["🟡 Yellow", "连续 ≥ 3 帧状态平稳"],
+                ["🔴 Red", "连续 ≥ 2 帧低落或波动"],
+            ]
+            st.dataframe(
+                tracks, use_container_width=True, hide_index=True,
+                column_config={
+                    "0": st.column_config.TextColumn("等级"),
+                    "1": st.column_config.TextColumn("触发条件"),
+                }
+            )
+        st.info("滑动窗口检测短期突变，连续追踪检测长期趋势。任一触发 Red 即报警。")
+
+    st.markdown("---")
 
 if input_type == "📷 上传图片":
     file = st.file_uploader("上传图片", type=["jpg", "jpeg", "png"])

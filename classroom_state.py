@@ -219,11 +219,11 @@ class WarningTracker:
             self.low_streak = 0
             self.volatile_streak += 1
 
-        if self.low_streak >= 3 or self.volatile_streak >= 3:
+        if self.low_streak >= 2 or self.volatile_streak >= 2:
             self.current_level = "Red"
-        elif self.stable_streak >= 5:
+        elif self.stable_streak >= 3:
             self.current_level = "Yellow"
-        elif self.good_streak >= 10:
+        elif self.good_streak >= 4:
             self.current_level = "Green"
         else:
             self.current_level = "Normal"
